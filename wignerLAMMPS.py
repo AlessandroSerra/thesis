@@ -3,7 +3,6 @@
 # NOTE: classical velocities are set to zero in this code
 
 from argparse import ArgumentParser, Namespace
-from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple, TypeVar
 
 import numpy as np
@@ -11,6 +10,8 @@ from numpy.typing import NDArray
 from scipy.integrate import simpson
 from scipy.interpolate import RectBivariateSpline, interp1d
 from scipy.linalg import eigh_tridiagonal
+
+from MDtools.dataStructures import Atom
 
 # --------------------------------------------------------------
 #                   --- Constants and Parameters ---
@@ -45,18 +46,13 @@ D_OH = 4.82
 D_star = D_OH / g  # eV
 
 
-# --- Atom Object ---
-@dataclass
-class Atom:
-    index: int
-    atom_type: int
-    position: np.ndarray
-    velocity: np.ndarray
-
-
 # custom types fot Atom and Molecule
 AtomType = TypeVar("AtomType", bound="Atom")
 MoleculeType = List[AtomType]
+
+# Global variables with default values
+verbose_output = None
+plot = False
 
 
 # --------------------------------------------------------------
@@ -69,6 +65,8 @@ def readLAMMPSdump(
         lines = f.readlines()
 
     molecules = []
+    n_atoms = 0
+    box_bounds = np.zeros((3, 2))
 
     for i, line in enumerate(lines):
         if "NUMBER OF ATOMS" in line:
@@ -91,6 +89,8 @@ def readLAMMPSdump(
                 atom_data = list(map(float, lines[i + j + 1].split()))
                 atom_id = int(atom_data[0])
                 atom_type = int(atom_data[1])
+                atom_string = "O" if atom_type == 1 else "H"
+                mass = MASSES[atom_string]
                 position = np.array(atom_data[2:5])
                 if keep_vels:
                     if units == "metal":
@@ -101,7 +101,7 @@ def readLAMMPSdump(
                         velocity = np.array(atom_data[5:8])  # already in A/fs
                 else:
                     velocity = np.zeros(3)
-                atom = Atom(atom_id, atom_type, position, velocity)
+                atom = Atom(atom_id, atom_type, atom_string, mass, position, velocity)
                 current_molecule.append(atom)
 
                 # When we reach 2 atoms, create a molecule and reset
@@ -213,7 +213,6 @@ def solve_schrodinger_1d(
     Args:
         potential_func: Function V(r) defining the potential in eV.
         r_grid: 1D array of r values (Angstrom) for discretization.
-        mass_amu: Reduced mass of the particle (amu).
         num_states: Number of lowest energy states to return.
 
     Returns:
@@ -416,9 +415,6 @@ def sample_from_wigner(
     return samples
 
 
-# Sampling 1 points from Wigner distribution...
-# Sampling complete. Generated 1 samples.
-
 # -------------------------------------------------------
 # --- Coordinate Remapping (Unchanged from previous) ---
 # -------------------------------------------------------
@@ -575,7 +571,7 @@ def excite_molecules(
             print(f"New velocity for O atom: {np.linalg.norm(vel_O_new):.3f} A/fs")
             print(f"Delta V: {delta_V:.4f} A/fs")
 
-    if plot_wigner:
+    if plot:
         plot_wigner(
             r_grid,
             energies,
@@ -680,9 +676,13 @@ def plot_wigner(
     samples: Optional[List[Tuple[float, float]]] = None,
     state_level: int = 1,
 ) -> None:
-    import matplotlib.pyplot as plt
-    import scienceplots  # noqa: F401
-    from matplotlib.gridspec import GridSpec
+    try:
+        import matplotlib.pyplot as plt
+        import scienceplots  # noqa: F401
+        from matplotlib.gridspec import GridSpec
+    except ImportError:
+        print("Could not import matplotlib or scienceplots. Plotting disabled.")
+        return
 
     plt.style.use(["science", "notebook"])
 
@@ -714,6 +714,10 @@ def plot_wigner(
     else:
         fig = plt.figure(figsize=(8, 6))
         ax1 = fig.add_subplot(111)
+        ax2 = None
+        ax3 = None
+        wigner_0 = None
+        wigner_1 = None
 
     # Plot potential and wavefunctions
     V_grid = np.array([V_LS_hydrogen_motion(r) for r in r_grid])
@@ -740,9 +744,6 @@ def plot_wigner(
             color=f"C{i}",
             ha="right",  # Horizontal alignment: right-aligned
             va="bottom",  # Vertical alignment: below the anchor point
-            # bbox=dict(
-            #     facecolor="white", alpha=0.7, edgecolor="none"
-            # ),  # Optional: add a white box behind text
         )
 
     ax1.plot(r_grid, V_grid * EV_TO_CM1, color="black", label="V(r)", lw=2)
@@ -754,7 +755,12 @@ def plot_wigner(
     ax1.legend()
 
     # Plot Wigner distributions if we have the data
-    if wigner_grid is not None and p_grid is not None:
+    if (
+        wigner_grid is not None
+        and p_grid is not None
+        and ax2 is not None
+        and ax3 is not None
+    ):
         # Plot ground state (n=0) Wigner function
         im0 = ax2.contourf(r_grid, p_grid, wigner_0.T, levels=50, cmap="seismic")
         cbar0 = fig.colorbar(im0, ax=ax2, fraction=0.046, pad=0.04)
@@ -811,12 +817,11 @@ def plot_wigner(
 
 
 # -------------------------------------------------------
-# --- Main function to run the code ---
+# --- Process Command Line Arguments ---
 # -------------------------------------------------------
-def main():
-    # --- Argument parsing ---
+def parse_args() -> Namespace:
     parser = ArgumentParser(
-        prog="wigner.py",
+        prog="wignerLAMMPS.py",
         description="Script to excite water molecules in a LAMMPS dump file using Wigner Sampling.",
     )
     parser.add_argument(
@@ -885,41 +890,79 @@ def main():
         help="Units for LAMMPS data file [default: real]",
     )
 
-    args: Namespace = parser.parse_args()
+    return parser.parse_args()
 
-    global plot_wigner
-    plot_wigner = args.plot
 
-    global verbose_output
-    verbose_output = args.verbose
+# -------------------------------------------------------
+# --- Main processing function ---
+# -------------------------------------------------------
+def run_excitation(
+    dumpfile: str,
+    atom_per_molecule: int = 3,
+    excite_perc: float = 0.1,
+    excite_lvl: int = 1,
+    datafile: str = "excited.data",
+    plot: bool = False,
+    verbose: Optional[int] = None,
+    keep_vels: bool = False,
+    atom_style: str = "full",
+    units: str = "real",
+) -> Tuple[List[List[Atom]], NDArray[np.float64]]:
+    """
+    Process a LAMMPS dump file and excite molecules using Wigner sampling.
+
+    Args:
+        dumpfile: Input LAMMPS dump file path
+        atom_per_molecule: Number of atoms per molecule
+        excite_perc: Fraction of molecules to excite
+        excite_lvl: Excitation level (0=ground, 1=first excited state)
+        datafile: Output LAMMPS data file name
+        plot: Whether to plot Wigner functions
+        verbose: Verbosity level (None, 1, or 2)
+        keep_vels: Whether to keep original velocities
+        atom_style: LAMMPS atom style for output data file
+        units: LAMMPS units for output data file
+    """
+    global verbose_output, plot_wigner
+    verbose_output = verbose
+    plot_wigner = plot
 
     molecules, box_bounds = readLAMMPSdump(
-        args.dumpfile, args.atom_per_molecule, args.keep_vels, args.units
+        dumpfile, atom_per_molecule, keep_vels, units
     )
-    exc_molecules = excite_molecules(molecules, args.excite_perc, args.excite_lvl)
+    exc_molecules = excite_molecules(molecules, excite_perc, excite_lvl)
 
     print(
-        f"\nSuccessfully excited {int(len(molecules) * args.excite_perc)} out of {len(molecules)} molecules."
+        f"\nSuccessfully excited {int(len(molecules) * excite_perc)} out of {len(molecules)} molecules."
     )
 
-    writeLAMMPSdata(
-        args.datafile, exc_molecules, box_bounds, args.atom_style, args.units
-    )
+    writeLAMMPSdata(datafile, exc_molecules, box_bounds, atom_style, units)
 
-    # --- Note on exciting the second bond ---
-    # If you need to excite the *other* bond to v=0 (as in PDF 3 scenario)[cite: 183],
-    # you would repeat the process:
-    # 1. Get the index of the other H: h_idx_other = ...
-    # 2. Calculate Wigner for n=0: wigner_ground = calculate_wigner_function(psi_0, ...)
-    # 3. Sample from W_0: r_sampled_0, p_sampled_0 = sample_from_wigner(wigner_ground, ...)
-    # 4. Remap O and H_other: This is tricky because O's position/velocity
-    #    have already been changed by the first excitation. You need a
-    #    consistent way to apply both transformations. A possible approach:
-    #    a) Calculate the *change* in position/velocity for the first bond excitation.
-    #    b) Calculate the *change* for the second bond excitation (using original O pos/vel).
-    #    c) Apply the sum of changes to O, and the respective changes to H1 and H2.
-    #    This requires modifying the `remap_coords_vels` to return changes or
-    #    carefully managing the sequence of updates.
+    return molecules, box_bounds
+
+
+# -------------------------------------------------------
+# --- Main function to run the script ---
+# -------------------------------------------------------
+def main():
+    args = parse_args()
+
+    global verbose_output, plot
+    verbose_output = args.verbose
+    plot = args.plot
+
+    _ = run_excitation(
+        args.dumpfile,
+        args.atom_per_molecule,
+        args.excite_perc,
+        args.excite_lvl,
+        args.datafile,
+        args.plot,
+        args.verbose,
+        args.keep_vels,
+        args.atom_style,
+        args.units,
+    )
 
 
 if __name__ == "__main__":

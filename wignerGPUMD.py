@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 
-# NOTE: classical velocities are set to zero in this code
-
 import re
-from argparse import ArgumentParser, Namespace
-from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple, TypeVar
+from argparse import ArgumentParser
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.integrate import simpson
 from scipy.interpolate import RectBivariateSpline, interp1d
 from scipy.linalg import eigh_tridiagonal
+
+from MDtools.dataStructures import Atom, Simulation
 
 # --------------------------------------------------------------
 #                   --- Constants and Parameters ---
@@ -37,38 +36,12 @@ r0_star = r0
 R_OO = 2.85  # Angstrom
 
 # Dissociation Energy D (Required for correct energy scale)
-# We need k0 to find D via nD = k0*r0.
-# k0 = 4*pi^2*mu*c^2*omega^2. Let's estimate from omega ~ 3700 cm^-1
-# omega_hz = 3700 * 2.9979e10 # Hz
-# k0_cgs = 4 * np.pi**2 * (MU_OH * 1.66054e-24) * omega_hz**2 # dyne/cm
-# k0 = k0_cgs * 1e-13 # Convert dyne/cm to eV/A^2 (approx 0.599)
 D_OH = 4.82
 D_star = D_OH / g  # eV
 
-
-# --- Atom Object ---
-@dataclass
-class Atom:
-    index: int
-    atom_type: int
-    atom_string: str
-    mass: float
-    position: np.ndarray
-    velocity: np.ndarray
-
-
-@dataclass
-class Simulation:
-    n_atoms: int
-    lattice_string: str
-    cell_vectors: NDArray[np.float64]
-    properties_string: str
-
-
-# custom types fot Atom and Molecule
-AtomType = TypeVar("AtomType", bound="Atom")
-SimulationType = TypeVar("SimulationType", bound="Simulation")
-MoleculeType = List[AtomType]
+# Global variables to be set during execution
+verbose_output = None
+plot = False
 
 
 # --------------------------------------------------------------
@@ -188,7 +161,6 @@ def solve_schrodinger_1d(
     Args:
         potential_func: Function V(r) defining the potential in eV.
         r_grid: 1D array of r values (Angstrom) for discretization.
-        mass_amu: Reduced mass of the particle (amu).
         num_states: Number of lowest energy states to return.
 
     Returns:
@@ -373,9 +345,6 @@ def sample_from_wigner(
         acceptance_prob = np.abs(w_val) / w_max
         if np.random.rand() < acceptance_prob:
             # Accept the sample (r_try, p_try)
-            # Store the sign of W(r,p) as well, although it's not directly used
-            # in the remapping step, it's characteristic of the distribution.
-            # sign_w = np.sign(w_val)
             samples.append((r_try, p_try))
             count += 1
 
@@ -390,9 +359,6 @@ def sample_from_wigner(
 
     return samples
 
-
-# Sampling 1 points from Wigner distribution...
-# Sampling complete. Generated 1 samples.
 
 # -------------------------------------------------------
 # --- Coordinate Remapping (Unchanged from previous) ---
@@ -429,8 +395,6 @@ def remap_coords_vels(
     # Update velocities (preserve center of mass velocity)
     # p_new is relative momentum along the bond in amu * A / fs
     # Velocity change dv = p_rel / m
-    # scaled_p = p_new / 12
-    # p_new = scaled_p
     vel_O_new = vel_O - (p_new / MASSES["O"]) * unit_vec_OH  # A / fs
     vel_H_new = vel_H + (p_new / MASSES["H"]) * unit_vec_OH  # A / fs
 
@@ -570,7 +534,7 @@ def excite_molecules(
 def writeXYZ(
     filename: str,
     molecules: List[List[Atom]],
-    simulation: SimulationType,
+    simulation: Simulation,
 ) -> None:
     lattice_string = f'Lattice="{simulation.lattice_string}"'
     properties_string = f"Properties={simulation.properties_string}"
@@ -678,143 +642,200 @@ def plot_wigner(
     samples: Optional[List[Tuple[float, float]]] = None,
     state_level: int = 1,
 ) -> None:
-    import matplotlib.pyplot as plt
-    import scienceplots  # noqa: F401
-    from matplotlib.gridspec import GridSpec
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.gridspec import GridSpec
 
-    plt.style.use(["science", "notebook"])
+        # Optional import of scienceplots - we'll handle if it's not available
+        try:
+            import scienceplots
 
-    # Calculate both ground and excited state Wigner functions
-    if wigner_grid is not None and p_grid is not None:
-        # Create a figure with a side-by-side layout
-        fig = plt.figure(figsize=(16, 8))  # Wide figure for side-by-side layout
+            plt.style.use(["science", "notebook"])
+        except ImportError:
+            pass
 
-        # Create a grid with 2 rows, 2 columns
-        # Left side: potential/wavefunctions (spans both rows)
-        # Right side: two Wigner functions one above the other
-        gs = GridSpec(2, 2, width_ratios=[1, 1], height_ratios=[1, 1])
+        # Calculate both ground and excited state Wigner functions
+        if wigner_grid is not None and p_grid is not None:
+            # Create a figure with a side-by-side layout
+            fig = plt.figure(figsize=(16, 8))  # Wide figure for side-by-side layout
 
-        ax1 = fig.add_subplot(
-            gs[:, 0]
-        )  # Left side: potential/wavefunctions (spans both rows)
-        ax2 = fig.add_subplot(gs[0, 1])  # Top-right: Ground state (n=0) Wigner function
-        ax3 = fig.add_subplot(
-            gs[1, 1]
-        )  # Bottom-right: Excited state (n=1) Wigner function
+            # Create a grid with 2 rows, 2 columns
+            gs = GridSpec(2, 2, width_ratios=[1, 1], height_ratios=[1, 1])
 
-        # Calculate ground state Wigner function
-        psi_0 = eigenvectors[:, 0]
-        wigner_0 = calculate_wigner_function(psi_0, r_grid, p_grid)
+            ax1 = fig.add_subplot(
+                gs[:, 0]
+            )  # Left side: potential/wavefunctions (spans both rows)
+            ax2 = fig.add_subplot(
+                gs[0, 1]
+            )  # Top-right: Ground state (n=0) Wigner function
+            ax3 = fig.add_subplot(
+                gs[1, 1]
+            )  # Bottom-right: Excited state (n=1) Wigner function
 
-        # Calculate excited state Wigner function
-        psi_1 = eigenvectors[:, 1]
-        wigner_1 = calculate_wigner_function(psi_1, r_grid, p_grid)
-    else:
-        fig = plt.figure(figsize=(8, 6))
-        ax1 = fig.add_subplot(111)
+            # Calculate ground state Wigner function
+            psi_0 = eigenvectors[:, 0]
+            wigner_0 = calculate_wigner_function(psi_0, r_grid, p_grid)
 
-    # Plot potential and wavefunctions
-    V_grid = np.array([V_LS_hydrogen_motion(r) for r in r_grid])
-    energies = eigenvalues
-    scale = 1  # Scale factor for wavefunction visualization
+            # Calculate excited state Wigner function
+            psi_1 = eigenvectors[:, 1]
+            wigner_1 = calculate_wigner_function(psi_1, r_grid, p_grid)
+        else:
+            fig = plt.figure(figsize=(8, 6))
+            ax1 = fig.add_subplot(111)
+            ax2 = None
+            ax3 = None
+            wigner_0 = None
+            wigner_1 = None
 
-    for i in range(len(eigenvalues)):
-        ax1.plot(
-            r_grid,
-            energies[i] * EV_TO_CM1 + scale * eigenvectors[:, i] * EV_TO_CM1,
-            label=f"psi_{i} (E={energies[i]:.3f} eV)",
-            color=f"C{i}",
+        # Plot potential and wavefunctions
+        V_grid = np.array([V_LS_hydrogen_motion(r) for r in r_grid])
+        energies = eigenvalues
+        scale = 1  # Scale factor for wavefunction visualization
+
+        for i in range(len(eigenvalues)):
+            ax1.plot(
+                r_grid,
+                energies[i] * EV_TO_CM1 + scale * eigenvectors[:, i] * EV_TO_CM1,
+                label=f"psi_{i} (E={energies[i]:.3f} eV)",
+                color=f"C{i}",
+            )
+            ax1.axhline(
+                energies[i] * EV_TO_CM1 + scale * eigenvectors[0, i] * EV_TO_CM1,
+                color=f"C{i}",
+                linestyle="--",
+                lw=1,
+            )
+            ax1.text(
+                r_grid[-1] * 0.98,  # x-position (near the right edge)
+                energies[i] * EV_TO_CM1 + 0.02,  # y-position (slightly above the line)
+                f"E_{i} = {energies[i] * EV_TO_CM1:.0f} cm-1",
+                color=f"C{i}",
+                ha="right",  # Horizontal alignment: right-aligned
+                va="bottom",  # Vertical alignment: below the anchor point
+            )
+
+        ax1.plot(r_grid, V_grid * EV_TO_CM1, color="black", label="V(r)", lw=2)
+        ax1.set_xlabel("r [Å]")
+        ax1.set_ylabel("Energy [cm-1]")
+        ax1.set_xlim(r_grid[0], r_grid[-1])
+        ax1.set_title("Lippincott-Schroeder Potential and Wavefunctions")
+        ax1.grid()
+        ax1.legend()
+
+        # Plot Wigner distributions if we have the data
+        if (
+            wigner_grid is not None
+            and p_grid is not None
+            and ax2 is not None
+            and ax3 is not None
+        ):
+            # Plot ground state (n=0) Wigner function
+            im0 = ax2.contourf(r_grid, p_grid, wigner_0.T, levels=50, cmap="seismic")
+            cbar0 = fig.colorbar(im0, ax=ax2, fraction=0.046, pad=0.04)
+            cbar0.set_label("Wigner Function (n=0)")
+            ax2.set_xlabel("r [Å]")
+            ax2.set_ylabel("p [amu·Å/fs]")
+            ax2.set_title("Ground State (n=0) Wigner Distribution")
+
+            # Plot excited state (n=1) Wigner function
+            im1 = ax3.contourf(r_grid, p_grid, wigner_1.T, levels=50, cmap="seismic")
+            cbar1 = fig.colorbar(im1, ax=ax3, fraction=0.046, pad=0.04)
+            cbar1.set_label("Wigner Function (n=1)")
+            ax3.set_xlabel("r ([Å]")
+            ax3.set_ylabel("p [amu·Å/fs]")
+            ax3.set_title("Excited State (n=1) Wigner Distribution")
+
+            # Plot sampled points if provided
+            if samples is not None and len(samples) > 0:
+                r_samples, p_samples = zip(*samples)
+                # Add samples to the appropriate plot based on state_level
+                if state_level == 0:
+                    ax2.scatter(
+                        r_samples,
+                        p_samples,
+                        color="black",
+                        marker="o",
+                        s=10,
+                        alpha=0.7,
+                        label=f"Samples ({len(samples)} points)",
+                    )
+                    ax2.legend()
+                else:  # state_level == 1 or higher
+                    ax3.scatter(
+                        r_samples,
+                        p_samples,
+                        color="black",
+                        marker="o",
+                        s=10,
+                        alpha=0.7,
+                        label=f"Samples ({len(samples)} points)",
+                    )
+                    ax3.text(
+                        r_grid[-1] * 0.95,
+                        p_grid[-1] * 0.8,
+                        f"{len(samples)} samples",
+                        color="black",
+                        ha="right",
+                        va="bottom",
+                        fontdict={"size": 12, "weight": "bold"},
+                    )
+
+        plt.tight_layout()
+        plt.show()
+    except ImportError as e:
+        print(f"Could not generate plot: {e}")
+        print("Install matplotlib and scienceplots for visualization.")
+
+
+def run_excitation(
+    dumpfile: str,
+    atom_per_molecule: int = 3,
+    excite_perc: float = 0.1,
+    excite_lvl: int = 1,
+    datafile: str = "excited.xyz",
+    plot_enabled: bool = False,
+    verbosity: Optional[int] = None,
+    keep_vels: bool = False,
+) -> Tuple[List[List[Atom]], Simulation]:
+    """
+    Main function to run the Wigner sampling and excitation.
+
+    Args:
+        dumpfile: Path to the GPUMD dump file
+        atom_per_molecule: Number of atoms per molecule
+        excite_perc: Fraction of molecules to excite (0.0-1.0)
+        excite_lvl: Excitation level (0 = ground state, 1 = first excited)
+        datafile: Output data filename
+        plot_enabled: Whether to generate plots
+        verbosity: Verbosity level (None, 1, 2)
+        keep_vels: Whether to keep original velocities
+    """
+    global plot, verbose_output
+
+    plot = plot_enabled
+    verbose_output = verbosity
+
+    # Read molecules
+    molecules, simulation = readGPUMDdump(dumpfile, atom_per_molecule, keep_vels)
+
+    # Perform excitation
+    exc_molecules = excite_molecules(molecules, excite_perc, excite_lvl)
+
+    if verbose_output is not None:
+        print(
+            f"\nSuccessfully excited {int(len(molecules) * excite_perc)} out of {len(molecules)} molecules."
         )
-        ax1.axhline(
-            energies[i] * EV_TO_CM1 + scale * eigenvectors[0, i] * EV_TO_CM1,
-            color=f"C{i}",
-            linestyle="--",
-            lw=1,
-        )
-        ax1.text(
-            r_grid[-1] * 0.98,  # x-position (near the right edge)
-            energies[i] * EV_TO_CM1 + 0.02,  # y-position (slightly above the line)
-            f"E_{i} = {energies[i] * EV_TO_CM1:.0f} cm-1",
-            color=f"C{i}",
-            ha="right",  # Horizontal alignment: right-aligned
-            va="bottom",  # Vertical alignment: below the anchor point
-            # bbox=dict(
-            #     facecolor="white", alpha=0.7, edgecolor="none"
-            # ),  # Optional: add a white box behind text
-        )
 
-    ax1.plot(r_grid, V_grid * EV_TO_CM1, color="black", label="V(r)", lw=2)
-    ax1.set_xlabel("r [Å]")
-    ax1.set_ylabel("Energy [cm-1]")
-    ax1.set_xlim(r_grid[0], r_grid[-1])
-    ax1.set_title("Lippincott-Schroeder Potential and Wavefunctions")
-    ax1.grid()
-    ax1.legend()
+    # Write output
+    writeXYZ(datafile, exc_molecules, simulation)
 
-    # Plot Wigner distributions if we have the data
-    if wigner_grid is not None and p_grid is not None:
-        # Plot ground state (n=0) Wigner function
-        im0 = ax2.contourf(r_grid, p_grid, wigner_0.T, levels=50, cmap="seismic")
-        cbar0 = fig.colorbar(im0, ax=ax2, fraction=0.046, pad=0.04)
-        cbar0.set_label("Wigner Function (n=0)")
-        ax2.set_xlabel("r [Å]")
-        ax2.set_ylabel("p [amu·Å/fs]")
-        ax2.set_title("Ground State (n=0) Wigner Distribution")
-
-        # Plot excited state (n=1) Wigner function
-        im1 = ax3.contourf(r_grid, p_grid, wigner_1.T, levels=50, cmap="seismic")
-        cbar1 = fig.colorbar(im1, ax=ax3, fraction=0.046, pad=0.04)
-        cbar1.set_label("Wigner Function (n=1)")
-        ax3.set_xlabel("r ([Å]")
-        ax3.set_ylabel("p [amu·Å/fs]")
-        ax3.set_title("Excited State (n=1) Wigner Distribution")
-
-        # Plot sampled points if provided
-        if samples is not None and len(samples) > 0:
-            r_samples, p_samples = zip(*samples)
-            # Add samples to the appropriate plot based on state_level
-            if state_level == 0:
-                ax2.scatter(
-                    r_samples,
-                    p_samples,
-                    color="black",
-                    marker="o",
-                    s=10,
-                    alpha=0.7,
-                    label=f"Samples ({len(samples)} points)",
-                )
-                ax2.legend()
-            else:  # state_level == 1 or higher
-                ax3.scatter(
-                    r_samples,
-                    p_samples,
-                    color="black",
-                    marker="o",
-                    s=10,
-                    alpha=0.7,
-                    label=f"Samples ({len(samples)} points)",
-                )
-                ax3.text(
-                    r_grid[-1] * 0.95,
-                    p_grid[-1] * 0.8,
-                    f"{len(samples)} samples",
-                    color="black",
-                    ha="right",
-                    va="bottom",
-                    fontdict={"size": 12, "weight": "bold"},
-                )
-
-    plt.tight_layout()
-    plt.show()
+    return exc_molecules, simulation
 
 
-# -------------------------------------------------------
-# --- Main function to run the code ---
-# -------------------------------------------------------
 def main():
     # --- Argument parsing ---
     parser = ArgumentParser(
-        prog="wigner.py",
+        prog="wignerGPUMD.py",
         description="Script to excite water molecules in a LAMMPS dump file using Wigner Sampling.",
     )
     parser.add_argument(
@@ -867,40 +888,25 @@ def main():
         action="store_true",
         help="Keep original Maxwell-Boltzmann velocities of the molecules.",
     )
-    # parser.add_argument(
-    #     "-u",
-    #     "--units",
-    #     type=str,
-    #     default="metal",
-    #     choices=["metal", "real"],
-    #     help="Units for LAMMPS data file [default: metal].",
-    # )
 
-    args: Namespace = parser.parse_args()
+    args = parser.parse_args()
 
-    global plot
+    # Set global variables
+    global plot, verbose_output
     plot = args.plot
-
-    global verbose_output
     verbose_output = args.verbose
 
-    molecules, simulation = readGPUMDdump(
-        args.dumpfile, args.atom_per_molecule, args.keep_vels
+    # Run the main workflow
+    _ = run_excitation(
+        args.dumpfile,
+        args.atom_per_molecule,
+        args.excite_perc,
+        args.excite_lvl,
+        args.datafile,
+        args.plot,
+        args.verbose,
+        args.keep_vels,
     )
-    exc_molecules = excite_molecules(molecules, args.excite_perc, args.excite_lvl)
-
-    print(
-        f"\nSuccessfully excited {int(len(molecules) * args.excite_perc)} out of {len(molecules)} molecules."
-    )
-
-    writeXYZ(args.datafile, exc_molecules, simulation)
-    # writeLAMMPSdata(
-    #     args.datafile.replace(".xyz", ".data"),
-    #     exc_molecules,
-    #     simulation.cell_vectors,
-    #     atom_style="atomic",
-    #     units="metal",
-    # )
 
 
 if __name__ == "__main__":

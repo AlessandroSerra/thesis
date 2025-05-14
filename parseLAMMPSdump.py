@@ -21,6 +21,7 @@ def readLAMMPSdump(
     filename: str,
     atom_per_molecule: int = 3,
     keep_vels: bool = True,
+    has_mass: bool = False,
     units: str = "metal",
 ) -> Tuple[List[Frame], Simulation]:
     """
@@ -93,11 +94,15 @@ def readLAMMPSdump(
                 atom_type = int(atom_data[1])
                 atom_string = "O" if atom_type == 1 else "H"
                 position = np.array(atom_data[2:5], dtype=float)
-                mass = float(atom_data[5])
+                mass = float(atom_data[5]) if has_mass else None
 
                 # --- velocities ---
                 if keep_vels:
-                    vel = np.array(atom_data[5:8], dtype=float)
+                    vel = (
+                        np.array(atom_data[5:8], dtype=float)
+                        if has_mass
+                        else np.array(atom_data[4:7])
+                    )
                     if units == "metal":  # Å/ps → Å/fs
                         vel *= 1e-3
                 else:

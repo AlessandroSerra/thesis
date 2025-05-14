@@ -1,14 +1,11 @@
 import functools
 import multiprocessing
-import os
 import time
-from typing import Dict, List, Optional, Set, Tuple, TypeVar
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-# Define missing type variables
-AtomType = TypeVar("AtomType")
-FrameType = TypeVar("FrameType")
+from MDtools.dataStructures import Atom, Frame
 
 DEFAULT_KB_CONSTANT: float = 8.31446261815324e-7  # in appropriate units
 DEFAULT_HB_OO_DIST_CUTOFF: float = 3.5  # Angstroms
@@ -26,7 +23,7 @@ def _normalize_vector(v: np.ndarray, epsilon: float) -> np.ndarray:
 
 # --- Inner Worker Function (for parallel processing, not for direct external use) ---
 def _process_single_frame_worker(
-    frame_data_tuple: Tuple[int, FrameType],
+    frame_data_tuple: Tuple[int, Frame],
     exc_indexes_set_arg: Set[int],
     kb_const: float,
     hb_cutoff_const: float,
@@ -40,7 +37,7 @@ def _process_single_frame_worker(
     """
     frame_idx, current_frame = frame_data_tuple
 
-    molecules_in_frame: List[List[AtomType]] = current_frame.molecules
+    molecules_in_frame: List[List[Atom]] = current_frame.molecules
     T_stretch_exc_frame: List[float] = []
     T_stretch_norm_frame: List[float] = []
     T_bend_frame: List[float] = []
@@ -53,10 +50,10 @@ def _process_single_frame_worker(
         if not isinstance(molecule_atoms, list) or len(molecule_atoms) != 3:
             continue
 
-        O_atom: Optional[AtomType] = None
-        H1_atom: Optional[AtomType] = None
-        H2_atom: Optional[AtomType] = None
-        temp_h_atoms: List[AtomType] = []
+        O_atom: Optional[Atom] = None
+        H1_atom: Optional[Atom] = None
+        H2_atom: Optional[Atom] = None
+        temp_h_atoms: List[Atom] = []
 
         try:
             for atom in molecule_atoms:
@@ -135,7 +132,7 @@ def _process_single_frame_worker(
 
         # --- Librational Temperatures for the current molecule ---
         try:
-            atoms_in_mol_lib: List[AtomType] = [O_atom, H1_atom, H2_atom]
+            atoms_in_mol_lib: List[Atom] = [O_atom, H1_atom, H2_atom]
             masses_lib = np.array([atom.mass for atom in atoms_in_mol_lib])
             positions_lib = np.array([atom.position for atom in atoms_in_mol_lib])
             velocities_lib = np.array([atom.velocity for atom in atoms_in_mol_lib])
@@ -206,7 +203,7 @@ def _process_single_frame_worker(
     if num_molecules_in_current_frame >= 2:
         for i in range(num_molecules_in_current_frame):
             mol1_atoms_list = molecules_in_frame[i]
-            O1_hb: Optional[AtomType] = None
+            O1_hb: Optional[Atom] = None
             try:  # Find Oxygen in molecule i
                 for atom_m1 in mol1_atoms_list:
                     if (
@@ -226,7 +223,7 @@ def _process_single_frame_worker(
 
             for j in range(i + 1, num_molecules_in_current_frame):
                 mol2_atoms_list = molecules_in_frame[j]
-                O2_hb: Optional[AtomType] = None
+                O2_hb: Optional[Atom] = None
                 try:  # Find Oxygen in molecule j
                     for atom_m2 in mol2_atoms_list:
                         if (
@@ -284,8 +281,8 @@ def _process_single_frame_worker(
 
 # --- Main Public Function ---
 def analyze_molecular_temperatures(
-    trajs_data: List[FrameType],
-    run_path: str,
+    trajs_data: List[Frame],
+    nnp_indexes_file_path: str,
     num_processes: Optional[int] = None,
     kb_constant: float = DEFAULT_KB_CONSTANT,
     hb_cutoff: float = DEFAULT_HB_OO_DIST_CUTOFF,
@@ -298,7 +295,7 @@ def analyze_molecular_temperatures(
         trajs_data: List of Frame objects. Each Frame contains molecules (lists of AtomType).
                     AtomType objects must have 'index', 'atom_string', 'mass',
                     'position' (np.array in Å), and 'velocity' (np.array in Å/fs).
-        run_path: Path to the directory containing 'nnp-indexes.dat' for excited atoms.
+        nnp_indexes_file_path: Path to the directory containing 'nnp-indexes.dat' for excited atoms.
         time_step_fs: Time step between frames in femtoseconds. If None, plots against frame number.
         num_processes: Number of processes to use for parallel computation.
                        If None or <=0, uses all available CPU cores.
@@ -318,18 +315,17 @@ def analyze_molecular_temperatures(
     overall_start_time = time.time()
 
     # Prepare list of (index, frame_object) for the worker
-    indexed_trajs_list: List[Tuple[int, FrameType]] = list(enumerate(trajs_data))
+    indexed_trajs_list: List[Tuple[int, Frame]] = list(enumerate(trajs_data))
 
     # Load excited atom indices
     exc_indexes_set_loaded: Set[int] = set()
-    nnp_indexes_file_path = os.path.join(run_path, "nnp-indexes.dat")
     try:
         exc_indexes_array = np.loadtxt(nnp_indexes_file_path, dtype=int)
-        exc_indexes_set_loaded = set(
-            exc_indexes_array.tolist()
-            if exc_indexes_array.ndim > 0
-            else [int(exc_indexes_array)]
-        )
+        if exc_indexes_array.ndim > 0:
+            exc_indexes_set_loaded = set(int(i) for i in exc_indexes_array.flatten())
+        else:
+            exc_indexes_set_loaded = {int(exc_indexes_array)}
+
         print(
             f"Loaded {len(exc_indexes_set_loaded)} excited atom indices from '{nnp_indexes_file_path}'."
         )

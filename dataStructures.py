@@ -33,4 +33,5 @@ class Simulation:
 
 AtomType = TypeVar("AtomType", bound="Atom")
 SimulationType = TypeVar("SimulationType", bound="Simulation")
+FrameType = TypeVar("FrameType", bound="Frame")
 MoleculeType = List[AtomType]

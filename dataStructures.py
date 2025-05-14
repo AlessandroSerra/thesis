@@ -10,8 +10,8 @@ from numpy.typing import NDArray
 class Atom:
     index: int
     atom_type: int
-    atom_string: str
-    mass: float
+    atom_string: str | None
+    mass: float | None
     position: np.ndarray
     velocity: np.ndarray
 

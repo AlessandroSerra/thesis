@@ -414,12 +414,5 @@ def analyze_molecular_temperatures(
         "libration_twist": frame_avg_T_twist_list,
         "libration_wag": frame_avg_T_wag_list,
         "libration_rock": frame_avg_T_rock_list,
-        "overall_avg_stretch_excited_H": overall_avg_T_stretch_exc,
-        "overall_avg_stretch_normal_H": overall_avg_T_stretch_norm,
-        "overall_avg_bend_HOH": overall_avg_T_bend,
-        "overall_avg_hydrogen_bond_OO": overall_avg_T_hb,
-        "overall_avg_libration_twist": overall_avg_T_twist,
-        "overall_avg_libration_wag": overall_avg_T_wag,
-        "overall_avg_libration_rock": overall_avg_T_rock,
     }
     return returned_data

@@ -11,7 +11,7 @@ from MDtools.dataStructures import Atom, Frame, Simulation
 # --------------------------------------------------------------
 def readGPUMDdump(
     filename: str, atom_per_molecule: int = 3, keep_vels: bool = True
-) -> Tuple[List[Frame], Simulation]:
+) -> Tuple[List[Frame], Simulation | None]:
     frames = []
     simulation = None  # Initialize as None in case there are no frames
 
@@ -100,3 +100,30 @@ def readGPUMDdump(
             frame_index += 1
 
     return frames, simulation
+
+
+def writeXYZ(frames: list[Frame], simulation: Simulation, filename: str) -> None:
+    """
+    Scrive le coordinate unwrapped in un file XYZ.
+    """
+    with open(filename, "w") as f:
+        for frame in frames:
+            f.write(f"{simulation.n_atoms}\n")
+            f.write(
+                f'Time={frame.timestep} pbc="T T T" Lattice={simulation.lattice_string} Properties={simulation.properties_string}'
+            )
+            for molecule in frame.molecules:
+                for atom in molecule:
+                    if (
+                        atom.unwrapped_position is not None
+                    ):  # Scrive le coordinate unwrapped
+                        f.write(
+                            f"{atom.atom_string} {atom.position[0]} {atom.position[1]} {atom.position[2]} {atom.mass} {atom.velocity[0]} {atom.velocity[1]} {atom.velocity[2]} {atom.unwrapped_position[0]} {atom.unwrapped_position[1]} {atom.unwrapped_position[2]}\n"
+                        )
+
+                    else:
+                        f.write(
+                            f"{atom.atom_string} {atom.position[0]} {atom.position[1]} {atom.position[2]} {atom.mass} {atom.velocity[0]} {atom.velocity[1]} {atom.velocity[2]}"
+                        )
+
+    print(f"File {filename} written successfully.")

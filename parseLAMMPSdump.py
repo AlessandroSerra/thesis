@@ -115,6 +115,7 @@ def readLAMMPSdump(
                     atom_string=atom_string,
                     mass=mass,
                     position=position,
+                    unwrapped_position=None,
                     velocity=vel,
                 )
                 current_molecule.append(atom)

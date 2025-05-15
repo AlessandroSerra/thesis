@@ -10,7 +10,7 @@ from MDtools.dataStructures import Atom, Frame, Simulation
 #       --- Function to read LAMMPS dump file ---
 # --------------------------------------------------------------
 def readGPUMDdump(
-    filename: str, atom_per_molecule: int, keep_vels: bool
+    filename: str, atom_per_molecule: int = 3, keep_vels: bool = True
 ) -> Tuple[List[Frame], Simulation]:
     frames = []
     simulation = None  # Initialize as None in case there are no frames
@@ -71,6 +71,7 @@ def readGPUMDdump(
                 atom_string = line_split[0]
                 atom_type = 1 if atom_string == "O" else 2
                 atom_position = np.array([float(x) for x in line_split[1:4]])
+                atom_unwrapped_position = np.array([float(x) for x in line_split[8:11]])
                 atom_mass = float(line_split[4])
                 atom_velocity = (
                     np.array([float(x) for x in line_split[5:8]])
@@ -84,6 +85,7 @@ def readGPUMDdump(
                     atom_string=atom_string,
                     mass=atom_mass,
                     position=atom_position,
+                    unwrapped_position=atom_unwrapped_position,
                     velocity=atom_velocity,
                 )
                 current_molecule.append(atom)

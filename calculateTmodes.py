@@ -25,6 +25,7 @@ def _normalize_vector(v: np.ndarray, epsilon: float) -> np.ndarray:
 def _process_single_frame_worker(
     frame_data_tuple: Tuple[int, Frame],
     exc_indexes_set_arg: Set[int],
+    unwrapped_coords: bool,
     kb_const: float,
     hb_cutoff_const: float,
     epsilon_const: float,
@@ -36,6 +37,16 @@ def _process_single_frame_worker(
     Each can be np.nan if not calculable for the frame.
     """
     frame_idx, current_frame = frame_data_tuple
+
+    # Helper function to get the right position based on flag
+    def get_position(atom: Atom) -> np.ndarray:
+        if (
+            unwrapped_coords
+            and hasattr(atom, "unwrapped_position")
+            and atom.unwrapped_position is not None
+        ):
+            return atom.unwrapped_position
+        return atom.position
 
     molecules_in_frame: List[List[Atom]] = current_frame.molecules
     T_stretch_exc_frame: List[float] = []
@@ -87,7 +98,7 @@ def _process_single_frame_worker(
             mu_OH = (m_O * m_H) / (m_O + m_H)
 
             for h_atom_current in [H1_atom, H2_atom]:  # OH Stretching
-                d_OH_vec = O_atom.position - h_atom_current.position
+                d_OH_vec = get_position(O_atom) - get_position(h_atom_current)
                 d_OH_mag = np.linalg.norm(d_OH_vec)
                 if d_OH_mag < epsilon_const:
                     continue
@@ -101,8 +112,8 @@ def _process_single_frame_worker(
                     T_stretch_norm_frame.append(temp_val)
 
             # HOH Bending
-            d_O_H1_vec = H1_atom.position - O_atom.position
-            d_O_H2_vec = H2_atom.position - O_atom.position
+            d_O_H1_vec = get_position(H1_atom) - get_position(O_atom)
+            d_O_H2_vec = get_position(H2_atom) - get_position(O_atom)
             d_O_H1_mag = np.linalg.norm(d_O_H1_vec)
             d_O_H2_mag = np.linalg.norm(d_O_H2_vec)
 
@@ -118,7 +129,7 @@ def _process_single_frame_worker(
                 H2_atom.velocity - np.dot(H2_atom.velocity, u_O_H2_hat) * u_O_H2_hat
             )
 
-            d_H1H2_vec = H1_atom.position - H2_atom.position
+            d_H1H2_vec = get_position(H1_atom) - get_position(H2_atom)
             d_H1H2_mag = np.linalg.norm(d_H1H2_vec)
             if d_H1H2_mag < epsilon_const:
                 continue
@@ -134,7 +145,7 @@ def _process_single_frame_worker(
         try:
             atoms_in_mol_lib: List[Atom] = [O_atom, H1_atom, H2_atom]
             masses_lib = np.array([atom.mass for atom in atoms_in_mol_lib])
-            positions_lib = np.array([atom.position for atom in atoms_in_mol_lib])
+            positions_lib = np.array([get_position(atom) for atom in atoms_in_mol_lib])
             velocities_lib = np.array([atom.velocity for atom in atoms_in_mol_lib])
 
             M_total_lib = np.sum(masses_lib)
@@ -151,8 +162,8 @@ def _process_single_frame_worker(
             r_prime_lib = positions_lib - R_cm_lib  # positions relative to CM
             v_rel_cm_lib = velocities_lib - V_cm_lib  # velocities relative to CM
 
-            vec_OH1_lib = H1_atom.position - O_atom.position
-            vec_OH2_lib = H2_atom.position - O_atom.position
+            vec_OH1_lib = get_position(H1_atom) - get_position(O_atom)
+            vec_OH2_lib = get_position(H2_atom) - get_position(O_atom)
 
             # Define body-fixed axes (u: bisector, w: normal to plane, v: in-plane perp to u)
             axis1_u = _normalize_vector(
@@ -242,7 +253,7 @@ def _process_single_frame_worker(
                     continue
 
                 try:  # Calculate H-bond temperature
-                    d_O1O2_vec = O1_hb.position - O2_hb.position
+                    d_O1O2_vec = get_position(O1_hb) - get_position(O2_hb)
                     d_O1O2_mag = np.linalg.norm(d_O1O2_vec)
                     if epsilon_const < d_O1O2_mag < hb_cutoff_const:
                         u_O1O2_hat = d_O1O2_vec / d_O1O2_mag
@@ -282,7 +293,8 @@ def _process_single_frame_worker(
 # --- Main Public Function ---
 def analyze_molecular_temperatures(
     trajs_data: List[Frame],
-    nnp_indexes_file_path: str,
+    exc_indexes_file_path: str,
+    unwrapped_coords: bool = False,
     num_processes: Optional[int] = None,
     kb_constant: float = DEFAULT_KB_CONSTANT,
     hb_cutoff: float = DEFAULT_HB_OO_DIST_CUTOFF,
@@ -295,7 +307,7 @@ def analyze_molecular_temperatures(
         trajs_data: List of Frame objects. Each Frame contains molecules (lists of AtomType).
                     AtomType objects must have 'index', 'atom_string', 'mass',
                     'position' (np.array in Å), and 'velocity' (np.array in Å/fs).
-        nnp_indexes_file_path: Path to the directory containing 'nnp-indexes.dat' for excited atoms.
+        exc_indexes_file_path: Path to the directory containing 'nnp-indexes.dat' for excited atoms.
         time_step_fs: Time step between frames in femtoseconds. If None, plots against frame number.
         num_processes: Number of processes to use for parallel computation.
                        If None or <=0, uses all available CPU cores.
@@ -320,22 +332,22 @@ def analyze_molecular_temperatures(
     # Load excited atom indices
     exc_indexes_set_loaded: Set[int] = set()
     try:
-        exc_indexes_array = np.loadtxt(nnp_indexes_file_path, dtype=int)
+        exc_indexes_array = np.loadtxt(exc_indexes_file_path, dtype=int)
         if exc_indexes_array.ndim > 0:
             exc_indexes_set_loaded = set(int(i) for i in exc_indexes_array.flatten())
         else:
             exc_indexes_set_loaded = {int(exc_indexes_array)}
 
         print(
-            f"Loaded {len(exc_indexes_set_loaded)} excited atom indices from '{nnp_indexes_file_path}'."
+            f"Loaded {len(exc_indexes_set_loaded)} excited atom indices from '{exc_indexes_file_path}'."
         )
     except FileNotFoundError:
         print(
-            f"Warning: File not found - '{nnp_indexes_file_path}'. No excited H-atom differentiation for stretch."
+            f"Warning: File not found - '{exc_indexes_file_path}'. No excited H-atom differentiation for stretch."
         )
     except Exception as e:
         print(
-            f"Error loading '{nnp_indexes_file_path}': {e}. No excited H-atom differentiation."
+            f"Error loading '{exc_indexes_file_path}': {e}. No excited H-atom differentiation."
         )
 
     # Determine number of processes for multiprocessing
@@ -351,6 +363,7 @@ def analyze_molecular_temperatures(
     partial_worker_fn = functools.partial(
         _process_single_frame_worker,
         exc_indexes_set_arg=exc_indexes_set_loaded,
+        unwrapped_coords=unwrapped_coords,
         kb_const=kb_constant,
         hb_cutoff_const=hb_cutoff,
         epsilon_const=epsilon_val,

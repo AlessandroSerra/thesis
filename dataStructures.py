@@ -13,6 +13,7 @@ class Atom:
     atom_string: str | None
     mass: float | None
     position: np.ndarray
+    unwrapped_position: np.ndarray | None
     velocity: np.ndarray
 
 

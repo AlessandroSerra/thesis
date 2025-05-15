@@ -31,7 +31,7 @@ def _get_oxygen_and_hydrogens_in_molecule(
 
 
 # --- Funzione Principale ---
-def calculate_hydrogen_unwrapped_from_oxygen_reference(
+def calculate_unwrapped_coords(
     frames_input: Union[Frame, List[Frame]], simulation_input: Simulation
 ) -> None:
     """

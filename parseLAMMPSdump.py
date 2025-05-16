@@ -77,9 +77,7 @@ def readLAMMPSdump(
 
         line_index += 1
 
-        lattice_string = (
-            f"{xhi - xlo} 0.0 0.0 0.0 {yhi - ylo} 0.0 0.0 0.0 {zhi - zlo}"
-        )
+        lattice_string = f"{xhi - xlo} 0.0 0.0 0.0 {yhi - ylo} 0.0 0.0 0.0 {zhi - zlo}"
         lattice_values = np.array([float(x) for x in lattice_string.split()])
         cell_vectors = lattice_values.reshape((3, 3))
 
@@ -94,12 +92,10 @@ def readLAMMPSdump(
 
         current_molecule = []
         molecules = []
-        print(line_index)
         if line_index >= len(lines):
             break
 
         for _ in range(n_atoms):
-
             line_split = lines[line_index].split()
             line_index += 1
 
@@ -110,9 +106,7 @@ def readLAMMPSdump(
             atom_unwrapped_position = np.array([float(x) for x in line_split[9:12]])
             atom_mass = float(line_split[5])
             atom_velocity = (
-                np.array([float(x) for x in line_split[6:9]])
-                if True
-                else np.zeros(3)
+                np.array([float(x) for x in line_split[6:9]]) if True else np.zeros(3)
             )
 
             atom = Atom(

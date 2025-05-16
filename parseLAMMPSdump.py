@@ -1,10 +1,3 @@
-# parseLAMMPSdump.py
-"""
-Lettura di un file LAMMPS dump (un solo frame) e costruzione di:
-    • molecules : list[list[Atom]]
-    • simulation: Simulation
-"""
-
 from __future__ import annotations
 
 from typing import List, Tuple
@@ -18,12 +11,8 @@ from MDtools.dataStructures import Atom, Frame, Simulation
 #       --- Function to read LAMMPS dump file ---
 # --------------------------------------------------------------
 def readLAMMPSdump(
-    filename: str,
-    atom_per_molecule: int = 3,
-    keep_vels: bool = True,
-    has_mass: bool = False,
-    units: str = "metal",
-) -> Tuple[List[Frame], Simulation]:
+    filename: str, atom_per_molecule: int = 3, keep_vels: bool = True
+) -> Tuple[List[Frame], Simulation | None]:
     """
     Read multiple frames from a LAMMPS dump trajectory file.
 
@@ -35,9 +24,6 @@ def readLAMMPSdump(
         Number of atoms per molecule (3 for H2O, etc.).
     keep_vels : bool
         If True, reads velocities; otherwise sets them to zero.
-    units : str
-        'metal' → converts velocities from Å/ps → Å/fs, otherwise leaves them.
-
     Returns
     -------
     frames : List[Frame]
@@ -45,112 +31,135 @@ def readLAMMPSdump(
     simulation : Simulation
         Simulation object with cell information from the last frame.
     """
+
     frames = []
-    simulation = None
+    simulation = None  # Initialize as None in case there are no frames
 
-    with open(filename, "r") as fh:
-        lines = fh.readlines()
+    with open(f"{filename}", "r") as f:
+        lines = f.readlines()
 
-    i = 0
-    while i < len(lines):
-        if "ITEM: TIMESTEP" in lines[i]:
-            # Start of a new frame
-            timestep = int(lines[i + 1].strip())
+    line_index = 0
+    frame_index = 0
 
-            # Find n_atoms
-            while i < len(lines) and "NUMBER OF ATOMS" not in lines[i]:
-                i += 1
-            if i >= len(lines):
-                break
-            n_atoms = int(lines[i + 1].strip())
+    while line_index < len(lines):
+        # skip first line (ITEM: TIMESTEP)
+        line_index += 1
 
-            # Find box bounds
-            while i < len(lines) and "BOX BOUNDS" not in lines[i]:
-                i += 1
-            if i >= len(lines):
-                break
-            box_bounds = np.array(
-                [
-                    list(map(float, lines[i + 1].split())),
-                    list(map(float, lines[i + 2].split())),
-                    list(map(float, lines[i + 3].split())),
-                ],
-                dtype=float,
-            )
+        # Extract timestep
+        timestep = int(lines[line_index].strip())
 
-            # Find atoms section
-            while i < len(lines) and "ITEM: ATOMS" not in lines[i]:
-                i += 1
-            if i >= len(lines):
-                break
+        # skip third line (ITEM: NUMBER OF ATOMS)
+        line_index += 2
 
-            # Parse atom data
-            molecules: List[List[Atom]] = []
-            current_molecule: List[Atom] = []
+        # Extract number of atoms
+        n_atoms = int(lines[line_index].strip())
 
-            for j in range(n_atoms):
-                atom_data = list(map(float, lines[i + j + 1].split()))
-                atom_id = int(atom_data[0])
-                atom_type = int(atom_data[1])
-                atom_string = "O" if atom_type == 1 else "H"
-                position = np.array(atom_data[2:5], dtype=float)
-                mass = float(atom_data[5]) if has_mass else None
+        # skip fourth line (ITEM: BOX BOUNDS)
+        line_index += 2
 
-                # --- velocities ---
-                if keep_vels:
-                    vel = (
-                        np.array(atom_data[5:8], dtype=float)
-                        if has_mass
-                        else np.array(atom_data[4:7])
-                    )
-                    if units == "metal":  # Å/ps → Å/fs
-                        vel *= 1e-3
-                else:
-                    vel = np.zeros(3, dtype=float)
+        # Extract box bounds (xlo, xhi)
+        xlo = float(lines[line_index].split()[0])
+        xhi = float(lines[line_index].split()[1])
 
-                # --- Atom object ---
-                atom = Atom(
-                    index=atom_id,
-                    atom_type=atom_type,
-                    atom_string=atom_string,
-                    mass=mass,
-                    position=position,
-                    unwrapped_position=None,
-                    velocity=vel,
-                )
-                current_molecule.append(atom)
+        line_index += 1
 
-                # Pack molecule
-                if len(current_molecule) == atom_per_molecule:
-                    molecules.append(current_molecule)
-                    current_molecule = []
+        yhi = float(lines[line_index].split()[0])
+        ylo = float(lines[line_index].split()[1])
 
-            # Update Simulation object (with data from the current frame)
-            x_dim = np.abs(box_bounds[0][1] - box_bounds[0][0])
-            y_dim = np.abs(box_bounds[1][1] - box_bounds[1][0])
-            z_dim = np.abs(box_bounds[2][1] - box_bounds[2][0])
-            cell_vectors = np.diag([x_dim, y_dim, z_dim])
+        line_index += 1
 
+        zhi = float(lines[line_index].split()[0])
+        zlo = float(lines[line_index].split()[1])
+
+        line_index += 1
+
+        properties_string = lines[line_index].strip()
+
+        line_index += 1
+
+        lattice_string = (
+            f"{xhi - xlo} 0.0 0.0 0.0 {yhi - ylo} 0.0 0.0 0.0 {zhi - zlo}"
+        )
+        lattice_values = np.array([float(x) for x in lattice_string.split()])
+        cell_vectors = lattice_values.reshape((3, 3))
+
+        # Create Simulation object for the first frame only
+        if frame_index == 0:
             simulation = Simulation(
                 n_atoms=n_atoms,
-                lattice_string=None,
+                lattice_string=lattice_string,
                 cell_vectors=cell_vectors,
-                properties_string=None,
+                properties_string=properties_string,
             )
 
-            # Create Frame object
-            frame = Frame(index=len(frames), timestep=timestep, molecules=molecules)
-            frames.append(frame)
+        current_molecule = []
+        molecules = []
+        print(line_index)
+        if line_index >= len(lines):
+            break
 
-            # Move to next line after atoms section
-            i += n_atoms + 1
-        else:
-            i += 1
+        for _ in range(n_atoms):
 
-    if not frames:
-        raise RuntimeError("No frames found in the LAMMPS dump file.")
+            line_split = lines[line_index].split()
+            line_index += 1
 
-    if simulation is None:
-        raise RuntimeError("Could not create Simulation object from LAMMPS dump file.")
+            atom_index = int(line_split[0])
+            atom_type = int(line_split[1])
+            atom_string = "O" if atom_type == 1 else "H"
+            atom_position = np.array([float(x) for x in line_split[2:5]])
+            atom_unwrapped_position = np.array([float(x) for x in line_split[9:12]])
+            atom_mass = float(line_split[5])
+            atom_velocity = (
+                np.array([float(x) for x in line_split[6:9]])
+                if True
+                else np.zeros(3)
+            )
+
+            atom = Atom(
+                index=atom_index,
+                atom_type=atom_type,
+                atom_string=atom_string,
+                mass=atom_mass,
+                position=atom_position,
+                unwrapped_position=atom_unwrapped_position,
+                velocity=atom_velocity,
+            )
+            current_molecule.append(atom)
+
+            if len(current_molecule) == 3:
+                molecules.append(current_molecule)
+                current_molecule = []
+
+        # Create a frame and add to frames list
+        frame = Frame(index=frame_index, timestep=0, molecules=molecules)
+        frames.append(frame)
+        frame_index += 1
 
     return frames, simulation
+
+
+def writeXYZ(frames: list[Frame], simulation: Simulation, filename: str) -> None:
+    """
+    Scrive le coordinate unwrapped in un file XYZ.
+    """
+    with open(filename, "w") as f:
+        for frame in frames:
+            f.write(f"{simulation.n_atoms}\n")
+            f.write(
+                f'Time={frame.timestep} pbc="T T T" Lattice={simulation.lattice_string} Properties={simulation.properties_string}'
+            )
+            for molecule in frame.molecules:
+                for atom in molecule:
+                    if (
+                        atom.unwrapped_position is not None
+                    ):  # Scrive le coordinate unwrapped
+                        f.write(
+                            f"{atom.atom_string} {atom.position[0]} {atom.position[1]} {atom.position[2]} {atom.mass} {atom.velocity[0]} {atom.velocity[1]} {atom.velocity[2]} {atom.unwrapped_position[0]} {atom.unwrapped_position[1]} {atom.unwrapped_position[2]}\n"
+                        )
+
+                    else:
+                        f.write(
+                            f"{atom.atom_string} {atom.position[0]} {atom.position[1]} {atom.position[2]} {atom.mass} {atom.velocity[0]} {atom.velocity[1]} {atom.velocity[2]}"
+                        )
+
+    print(f"File {filename} written successfully.")

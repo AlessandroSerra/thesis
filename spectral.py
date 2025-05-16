@@ -5,6 +5,12 @@ import numpy as np
 
 from MDtools.dataStructures import Frame
 
+# Costanti utili (possono essere definite globalmente o passate/definite localmente)
+TWO_PI = 2.0 * np.pi
+# Fattore per convertire frequenza (in ps^-1 o THz) in wavenumbers (cm^-1)
+# 1 / (c_luce_cm_per_s * 1e-12 s/ps) = 1 / (2.99792458e10 * 1e-12)
+HZ_TO_CMINV_FACTOR = 33.3564095198152
+
 
 # Questa funzione verrebbe chiamata da calculate_standard_vacf_optimized
 # dopo aver preparato all_velocities_np e valid_atom_mask
@@ -57,7 +63,7 @@ def _calculate_vacf_core_numba(
 
 
 # --- Funzione Principale (Wrapper che chiama la logica Numba) ---
-def calculate_standard_vacf_numba_optimized(
+def calculateVACF(
     trajs: list[Frame],
     corr_steps: int,
     Natoms_per_molecule: int = 3,
@@ -164,11 +170,187 @@ def calculate_standard_vacf_numba_optimized(
     return vacf_final_averaged
 
 
-# Costanti utili (possono essere definite globalmente o passate/definite localmente)
-TWO_PI = 2.0 * np.pi
-# Fattore per convertire frequenza (in ps^-1 o THz) in wavenumbers (cm^-1)
-# 1 / (c_luce_cm_per_s * 1e-12 s/ps) = 1 / (2.99792458e10 * 1e-12)
-HZ_TO_CMINV_FACTOR = 33.3564095198152
+@numba.jit(nopython=True, parallel=True, fastmath=True)
+def _calculate_mvacf_core_numba(
+    Nframes: int,
+    actual_max_lag_steps: int,
+    total_atoms_in_system: int,
+    all_velocities_np: np.ndarray,  # Array 3D (frame, atom_g_idx, xyz)
+    valid_atom_mask: np.ndarray,  # Array 2D (frame, atom_g_idx)
+    all_masses_np: np.ndarray,  # Array 1D (atom_g_idx) con le masse atomiche
+) -> Tuple[np.ndarray, np.ndarray]:  # Ritorna mvacf_sum, mvacf_counts
+    mvacf_sum_all_nb = np.zeros(actual_max_lag_steps + 1, dtype=np.float64)
+    mvacf_counts_nb = np.zeros(
+        actual_max_lag_steps + 1, dtype=np.int64
+    )  # Conteggio delle coppie valide
+
+    for tau_s in numba.prange(actual_max_lag_steps + 1):
+        current_sum_for_tau = 0.0
+        current_count_for_tau = 0  # Conteggio per la normalizzazione
+
+        for t0_frame_idx in range(Nframes - tau_s):
+            t0_plus_tau_s_frame_idx = t0_frame_idx + tau_s
+            for atom_g_idx in range(total_atoms_in_system):
+                if (
+                    valid_atom_mask[t0_frame_idx, atom_g_idx]
+                    and valid_atom_mask[t0_plus_tau_s_frame_idx, atom_g_idx]
+                ):
+                    v0_x = all_velocities_np[t0_frame_idx, atom_g_idx, 0]
+                    v0_y = all_velocities_np[t0_frame_idx, atom_g_idx, 1]
+                    v0_z = all_velocities_np[t0_frame_idx, atom_g_idx, 2]
+
+                    v_tau_x = all_velocities_np[t0_plus_tau_s_frame_idx, atom_g_idx, 0]
+                    v_tau_y = all_velocities_np[t0_plus_tau_s_frame_idx, atom_g_idx, 1]
+                    v_tau_z = all_velocities_np[t0_plus_tau_s_frame_idx, atom_g_idx, 2]
+
+                    dot_product = v0_x * v_tau_x + v0_y * v_tau_y + v0_z * v_tau_z
+
+                    mass_atom = all_masses_np[atom_g_idx]
+                    current_sum_for_tau += (
+                        mass_atom * dot_product
+                    )  # Prodotto scalare pesato per massa
+                    current_count_for_tau += 1  # Normalizzazione per numero di termini
+
+        mvacf_sum_all_nb[tau_s] = current_sum_for_tau
+        mvacf_counts_nb[tau_s] = current_count_for_tau
+
+    return mvacf_sum_all_nb, mvacf_counts_nb
+
+
+def calculateMVACF(
+    trajs: list[Frame],
+    corr_steps: int,
+    Natoms_per_molecule: int = 3,
+) -> np.ndarray:
+    """
+    Calcola la Funzione di Autocorrelazione delle Velocità Pesata per Massa (MVACF),
+    ottimizzata con pre-estrazione delle velocità e masse, e Numba per i calcoli core.
+
+    Args:
+        trajs: Lista di oggetti Frame. Ogni Atom deve avere '.velocity' (np.ndarray)
+               e '.mass' (float). Si assume che la massa sia costante per ogni atomo
+               attraverso i frame e viene estratta dal primo frame.
+        corr_steps: Massimo numero di passi di lag per la correlazione.
+        Natoms_per_molecule: Numero di atomi per molecola.
+
+    Returns:
+        Un array NumPy contenente i valori della MVACF mediata.
+    """
+    Nframes = len(trajs)
+    if Nframes == 0:
+        print("Attenzione (MVACF): La lista 'trajs' è vuota.")
+        return np.array([])
+
+    if not hasattr(trajs[0], "molecules") or not trajs[0].molecules:
+        print("Attenzione (MVACF): Il primo frame non contiene molecole.")
+        return np.array([])
+    Nmols = len(trajs[0].molecules)
+    if Nmols == 0:
+        print("Attenzione (MVACF): Nessuna molecola nel primo frame.")
+        return np.array([])
+
+    total_atoms_in_system = Nmols * Natoms_per_molecule
+    if total_atoms_in_system == 0:
+        print("Attenzione (MVACF): Numero totale di atomi calcolato come zero.")
+        return np.array([])
+
+    # --- Pre-estrazione delle velocità e delle masse ---
+    print(
+        f"Pre-estrazione delle velocità e masse per MVACF ({Nframes} frames, {total_atoms_in_system} atomi target)..."
+    )
+    all_velocities_np = np.zeros((Nframes, total_atoms_in_system, 3), dtype=np.float64)
+    valid_atom_mask = np.zeros((Nframes, total_atoms_in_system), dtype=np.bool_)
+    all_masses_np = np.ones(
+        total_atoms_in_system, dtype=np.float64
+    )  # Default a 1.0 se la massa non è trovata
+
+    global_atom_idx = 0
+    for i_mol in range(Nmols):
+        for j_atom_in_mol in range(Natoms_per_molecule):
+            if global_atom_idx >= total_atoms_in_system:
+                break
+
+            # Estrarre la massa per questo global_atom_idx (dall'atomo nel primo frame)
+            # Si assume che la massa dell'atomo (identificato da i_mol, j_atom_in_mol) sia costante.
+            try:
+                # Accedi all'atomo nel primo frame per ottenere la sua massa
+                atom_for_mass = trajs[0].molecules[i_mol][j_atom_in_mol]
+                if hasattr(atom_for_mass, "mass") and atom_for_mass.mass is not None:
+                    mass_val = float(atom_for_mass.mass)
+                    if mass_val > 0:
+                        all_masses_np[global_atom_idx] = mass_val
+                    else:
+                        print(
+                            f"Attenzione (MVACF): Massa non positiva ({mass_val}) per atomo (m{i_mol},a{j_atom_in_mol}, g_idx {global_atom_idx}). Uso massa = 1.0."
+                        )
+                        all_masses_np[global_atom_idx] = 1.0
+                else:
+                    print(
+                        f"Attenzione (MVACF): Attributo 'mass' mancante o None per atomo (m{i_mol},a{j_atom_in_mol}, g_idx {global_atom_idx}) nel frame 0. Uso massa = 1.0."
+                    )
+                    all_masses_np[global_atom_idx] = 1.0
+            except IndexError:
+                print(
+                    f"Attenzione (MVACF): Atomo (m{i_mol},a{j_atom_in_mol}, g_idx {global_atom_idx}) non trovato nel frame 0 per estrazione massa. Uso massa = 1.0."
+                )
+                all_masses_np[global_atom_idx] = 1.0
+            except Exception as e:  # Cattura altri errori imprevisti
+                print(
+                    f"Attenzione (MVACF): Errore imprevisto durante l'estrazione della massa per atomo (m{i_mol},a{j_atom_in_mol}, g_idx {global_atom_idx}): {e}. Uso massa = 1.0."
+                )
+                all_masses_np[global_atom_idx] = 1.0
+
+            # Estrarre le velocità per tutti i frame per l'atomo corrente
+            atom_consistently_valid_for_velocity = True
+            for frame_idx in range(Nframes):
+                try:
+                    atom = trajs[frame_idx].molecules[i_mol][j_atom_in_mol]
+                    if (
+                        hasattr(atom, "velocity")
+                        and atom.velocity is not None
+                        and len(atom.velocity) == 3
+                    ):
+                        all_velocities_np[frame_idx, global_atom_idx, :] = atom.velocity
+                        valid_atom_mask[frame_idx, global_atom_idx] = True
+                    else:
+                        valid_atom_mask[frame_idx, global_atom_idx] = False
+                        if atom_consistently_valid_for_velocity:
+                            # print(f"Debug (MVACF): Atomo logico (m{i_mol},a{j_atom_in_mol}, g_idx {global_atom_idx}) vel None/invalida al frame {frame_idx}")
+                            pass
+                        atom_consistently_valid_for_velocity = False
+                except IndexError:
+                    valid_atom_mask[frame_idx, global_atom_idx] = False
+                    if atom_consistently_valid_for_velocity:
+                        # print(f"Debug (MVACF): Atomo logico (m{i_mol},a{j_atom_in_mol}, g_idx {global_atom_idx}) non trovato al frame {frame_idx}")
+                        pass
+                    atom_consistently_valid_for_velocity = False
+            global_atom_idx += 1
+        if global_atom_idx >= total_atoms_in_system:
+            break
+    print("Pre-estrazione velocità e masse (MVACF) completata.")
+
+    actual_max_lag_steps = min(corr_steps, Nframes - 1)
+    if actual_max_lag_steps < 0:
+        actual_max_lag_steps = 0
+
+    print(f"Calcolo del core MVACF con Numba (max_lag_steps={actual_max_lag_steps})...")
+    mvacf_sum_all, mvacf_counts = _calculate_mvacf_core_numba(
+        Nframes,
+        actual_max_lag_steps,
+        total_atoms_in_system,
+        all_velocities_np,
+        valid_atom_mask,
+        all_masses_np,  # Passa le masse alla funzione Numba
+    )
+    print("Calcolo Numba (MVACF) completato.")
+
+    mvacf_final_averaged = np.full(actual_max_lag_steps + 1, np.nan, dtype=np.float64)
+    valid_counts_mask_final = mvacf_counts > 0
+    mvacf_final_averaged[valid_counts_mask_final] = (
+        mvacf_sum_all[valid_counts_mask_final] / mvacf_counts[valid_counts_mask_final]
+    )
+
+    return mvacf_final_averaged
 
 
 def _filon_cosine_transform_subroutine(

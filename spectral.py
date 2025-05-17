@@ -52,8 +52,11 @@ def _calculate_vacf_core_numba(
                     v_tau_z = all_velocities_np[t0_plus_tau_s_frame_idx, atom_g_idx, 2]
 
                     dot_product = v0_x * v_tau_x + v0_y * v_tau_y + v0_z * v_tau_z
+                    dot_product_norm = dot_product / (
+                        v0_x * v0_x + v0_y * v0_y + v0_z * v0_z
+                    )
 
-                    current_sum_for_tau += dot_product
+                    current_sum_for_tau += dot_product_norm
                     current_count_for_tau += 1
 
         vacf_sum_all_nb[tau_s] = current_sum_for_tau
@@ -65,16 +68,18 @@ def _calculate_vacf_core_numba(
 # --- Funzione Principale (Wrapper che chiama la logica Numba) ---
 def calculateVACF(
     trajs: list[Frame],
-    corr_steps: int,
+    timestep: float = 1.0,
+    corr_steps: int | None = None,
     Natoms_per_molecule: int = 3,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Calcola la Funzione di Autocorrelazione delle Velocità (VACF) standard,
     ottimizzata con pre-estrazione delle velocità e Numba per i calcoli core.
 
     Args:
         trajs: Lista di oggetti Frame. Ogni Atom deve avere '.velocity' (np.ndarray).
-        corr_steps: Massimo numero di passi di lag per la correlazione.
+        timestep: Intervallo di tempo tra i frame (in fs).
+        corr_steps: Massimo numero di passi di lag per la correlazione, se non formito default al numero di frames -1
         Natoms_per_molecule_provided: (Opzionale ma raccomandato se costante)
                                       Numero di atomi per molecola. Usato per dimensionare
                                       l'array pre-estratto. Se None, si tenta di dedurlo
@@ -85,22 +90,19 @@ def calculateVACF(
     """
     Nframes = len(trajs)
     if Nframes == 0:
-        print("Attenzione: La lista 'trajs' è vuota.")
-        return np.array([])
+        raise ValueError("Attenzione: La lista 'trajs' è vuota.")
 
     # Controlli preliminari sulla struttura dei dati
     if not trajs[0].molecules:
-        print("Attenzione: Il primo frame non contiene molecole.")
-        return np.array([])
+        raise ValueError("Attenzione: Il primo frame non contiene molecole.")
+
     Nmols = len(trajs[0].molecules)
     if Nmols == 0:
-        print("Attenzione: Nessuna molecola nel primo frame.")
-        return np.array([])
+        raise ValueError("Attenzione: Nessuna molecola nel primo frame.")
 
     total_atoms_in_system = Nmols * Natoms_per_molecule
     if total_atoms_in_system == 0:
-        print("Attenzione: Numero totale di atomi calcolato come zero.")
-        return np.array([])
+        raise ValueError("Attenzione: Numero totale di atomi calcolato come zero.")
 
     # --- Pre-estrazione delle velocità in array NumPy ---
     print(
@@ -145,7 +147,7 @@ def calculateVACF(
     print("Pre-estrazione completata.")
 
     # Determina i limiti effettivi per il lag
-    actual_max_lag_steps = min(corr_steps, Nframes - 1)
+    actual_max_lag_steps = corr_steps or (Nframes - 1)
     if actual_max_lag_steps < 0:
         actual_max_lag_steps = 0
 
@@ -167,7 +169,9 @@ def calculateVACF(
         vacf_sum_all[valid_counts_mask_final] / vacf_counts[valid_counts_mask_final]
     )
 
-    return vacf_final_averaged
+    time_axis = np.arange(len(vacf_final_averaged)) * timestep
+
+    return vacf_final_averaged, time_axis
 
 
 @numba.jit(nopython=True, parallel=True, fastmath=True)
@@ -204,10 +208,13 @@ def _calculate_mvacf_core_numba(
                     v_tau_z = all_velocities_np[t0_plus_tau_s_frame_idx, atom_g_idx, 2]
 
                     dot_product = v0_x * v_tau_x + v0_y * v_tau_y + v0_z * v_tau_z
+                    dot_product_norm = dot_product / (
+                        v0_x * v0_x + v0_y * v0_y + v0_z * v0_z
+                    )
 
                     mass_atom = all_masses_np[atom_g_idx]
                     current_sum_for_tau += (
-                        mass_atom * dot_product
+                        mass_atom * dot_product_norm
                     )  # Prodotto scalare pesato per massa
                     current_count_for_tau += 1  # Normalizzazione per numero di termini
 

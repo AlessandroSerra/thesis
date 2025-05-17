@@ -11,7 +11,10 @@ from MDtools.dataStructures import Atom, Frame, Simulation
 #       --- Function to read LAMMPS dump file ---
 # --------------------------------------------------------------
 def readLAMMPSdump(
-    filename: str, atom_per_molecule: int = 3, keep_vels: bool = True
+    filename: str,
+    units: str = "metal",
+    atom_per_molecule: int = 3,
+    keep_vels: bool = True,
 ) -> Tuple[List[Frame], Simulation | None]:
     """
     Read multiple frames from a LAMMPS dump trajectory file.
@@ -34,6 +37,7 @@ def readLAMMPSdump(
 
     frames = []
     simulation = None  # Initialize as None in case there are no frames
+    vels_factor = 1e-3 if units == "metal" else 1.0
 
     with open(f"{filename}", "r") as f:
         lines = f.readlines()
@@ -46,13 +50,13 @@ def readLAMMPSdump(
         line_index += 1
 
         # Extract timestep
-        timestep = int(lines[line_index].strip())
+        timestep = int(lines[line_index])
 
         # skip third line (ITEM: NUMBER OF ATOMS)
         line_index += 2
 
         # Extract number of atoms
-        n_atoms = int(lines[line_index].strip())
+        n_atoms = int(lines[line_index])
 
         # skip fourth line (ITEM: BOX BOUNDS)
         line_index += 2
@@ -106,8 +110,10 @@ def readLAMMPSdump(
             atom_unwrapped_position = np.array([float(x) for x in line_split[9:12]])
             atom_mass = float(line_split[5])
             atom_velocity = (
-                np.array([float(x) for x in line_split[6:9]]) if True else np.zeros(3)
-            )
+                np.array([float(x) * vels_factor for x in line_split[6:9]])
+                if keep_vels
+                else np.zeros(3)
+            )  # A/fs
 
             atom = Atom(
                 index=atom_index,
@@ -125,7 +131,7 @@ def readLAMMPSdump(
                 current_molecule = []
 
         # Create a frame and add to frames list
-        frame = Frame(index=frame_index, timestep=0, molecules=molecules)
+        frame = Frame(index=frame_index, timestep=timestep, molecules=molecules)
         frames.append(frame)
         frame_index += 1
 

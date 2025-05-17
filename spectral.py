@@ -226,9 +226,10 @@ def _calculate_mvacf_core_numba(
 
 def calculateMVACF(
     trajs: list[Frame],
-    corr_steps: int,
+    timestep: float = 1.0,
+    corr_steps: int | None = None,
     Natoms_per_molecule: int = 3,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Calcola la Funzione di Autocorrelazione delle Velocità Pesata per Massa (MVACF),
     ottimizzata con pre-estrazione delle velocità e masse, e Numba per i calcoli core.
@@ -245,21 +246,20 @@ def calculateMVACF(
     """
     Nframes = len(trajs)
     if Nframes == 0:
-        print("Attenzione (MVACF): La lista 'trajs' è vuota.")
-        return np.array([])
+        raise ValueError("Attenzione (MVACF): La lista 'trajs' è vuota.")
 
     if not hasattr(trajs[0], "molecules") or not trajs[0].molecules:
-        print("Attenzione (MVACF): Il primo frame non contiene molecole.")
-        return np.array([])
+        raise ValueError("Attenzione (MVACF): Il primo frame non contiene molecole.")
+
     Nmols = len(trajs[0].molecules)
     if Nmols == 0:
-        print("Attenzione (MVACF): Nessuna molecola nel primo frame.")
-        return np.array([])
+        raise ValueError("Attenzione (MVACF): Nessuna molecola nel primo frame.")
 
     total_atoms_in_system = Nmols * Natoms_per_molecule
     if total_atoms_in_system == 0:
-        print("Attenzione (MVACF): Numero totale di atomi calcolato come zero.")
-        return np.array([])
+        raise ValueError(
+            "Attenzione (MVACF): Numero totale di atomi calcolato come zero."
+        )
 
     # --- Pre-estrazione delle velocità e delle masse ---
     print(
@@ -336,7 +336,7 @@ def calculateMVACF(
             break
     print("Pre-estrazione velocità e masse (MVACF) completata.")
 
-    actual_max_lag_steps = min(corr_steps, Nframes - 1)
+    actual_max_lag_steps = corr_steps or (Nframes - 1)
     if actual_max_lag_steps < 0:
         actual_max_lag_steps = 0
 
@@ -357,7 +357,9 @@ def calculateMVACF(
         mvacf_sum_all[valid_counts_mask_final] / mvacf_counts[valid_counts_mask_final]
     )
 
-    return mvacf_final_averaged
+    time_axis = np.arange(len(mvacf_final_averaged)) * timestep
+
+    return mvacf_final_averaged, time_axis
 
 
 def _filon_cosine_transform_subroutine(

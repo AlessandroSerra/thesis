@@ -45,14 +45,20 @@ class Frame:
             for atom in molecule:
                 yield atom
 
-    def get_positions(self) -> Generator[np.ndarray, None, None]:
+    def get_positions(
+        self, type: str | None = None
+    ) -> Generator[np.ndarray, None, None]:
         """Yield positions of all atoms one by one (memory efficient)."""
         for atom in self:
-            yield atom.position
+            if type is not None:
+                if atom.atom_string == type:
+                    yield atom.position
+            else:
+                yield atom.position
 
-    def get_all_positions(self) -> np.ndarray:
+    def get_all_positions(self, type: str | None = None) -> np.ndarray:
         """Return a numpy array with all atom positions."""
-        return np.array(list(self.get_positions()))
+        return np.array(list(self.get_positions(type)))
 
     def get_unwrapped_positions(self) -> Generator[np.ndarray | None, None, None]:
         """Yield unwrapped positions of all atoms one by one (memory efficient)."""

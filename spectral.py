@@ -12,6 +12,30 @@ TWO_PI = 2.0 * np.pi
 HZ_TO_CMINV_FACTOR = 33.3564095198152
 
 
+# def _extract_vel_mass_from_traj(traj, atoms_per_molecule=3):
+#     """
+#     Estrae le velocità da una lista di Frame.
+#
+#     Returns:
+#         velocities: np.ndarray of shape (n_frames, n_atoms, 3)
+#     """
+#     n_frames = len(traj)
+#     n_mols = len(traj[0].molecules)
+#     n_atoms = n_mols * atoms_per_molecule
+#     velocities = np.zeros((n_frames, n_atoms, 3), dtype=np.float64)
+#     masses = np.zeros((n_frames, n_atoms), dtype=np.float64)
+#
+#     for i_frame, frame in enumerate(traj):
+#         idx = 0
+#         for mol in frame.molecules:
+#             for atom in mol[:atoms_per_molecule]:
+#                 velocities[i_frame, idx, :] = atom.velocity
+#                 masses[i_frame, idx] = atom.mass
+#                 idx += 1
+#
+#     return velocities, masses
+
+
 def _extract_vel_mass_from_traj(traj, atoms_per_molecule=3):
     """
     Estrae le velocità da una lista di Frame.
@@ -27,11 +51,10 @@ def _extract_vel_mass_from_traj(traj, atoms_per_molecule=3):
 
     for i_frame, frame in enumerate(traj):
         idx = 0
-        for mol in frame.molecules:
-            for atom in mol[:atoms_per_molecule]:
-                velocities[i_frame, idx, :] = atom.velocity
-                masses[i_frame, idx] = atom.mass
-                idx += 1
+        for atom in frame:
+            velocities[i_frame, idx, :] = atom.velocity
+            masses[i_frame, idx] = atom.mass
+            idx += 1
 
     return velocities, masses
 
@@ -105,6 +128,7 @@ def calculateVACFlmp(
     traj: list[Frame],
     max_correlation_len: int | None = None,
     mass_weighted: bool = False,
+    norm: bool = True,
 ) -> np.ndarray:
     """
     Simula il comportamento di compute vacf di LAMMPS.
@@ -116,6 +140,10 @@ def calculateVACFlmp(
     correlation_len : int, opzionale
         Numero massimo di passi di correlazione da calcolare.
         Se None, usa tutta la lunghezza disponibile.
+    mass_weighted : bool, opzionale
+    Se True, calcola la VACF pesata per massa.
+    norm : bool, opzionale
+    Se True, normalizza la VACF rispetto a lag 0.
 
     Returns
     -------
@@ -149,6 +177,10 @@ def calculateVACFlmp(
             weighted_dot = m0 * dot_products
             vacf[lag] = np.mean(weighted_dot) / m_sum  # Media sui N atomi
 
+        # Normalizza rispetto a lag 0
+        if norm:
+            vacf /= vacf[0]
+
         return vacf
 
     print(
@@ -160,7 +192,8 @@ def calculateVACFlmp(
         vacf[lag] = np.mean(dot_products)  # Media sui N atomi
 
     # Normalizza rispetto a lag 0
-    vacf /= vacf[0]
+    if norm:
+        vacf /= vacf[0]
 
     return vacf
 
@@ -255,6 +288,7 @@ def _filon_cosine_transform_subroutine(
 def calculateVDOS(
     time_points: np.ndarray,
     corr_values: np.ndarray,
+    norm: bool = True,
     gaussian_filter_width: Optional[float] = None,
     output_in_wavenumbers: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]]:
@@ -265,6 +299,7 @@ def calculateVDOS(
     Args:
         time_points: Array NumPy 1D dei punti temporali. Si assume dt costante.
         corr_values: Array NumPy 1D dei valori della funzione di correlazione.
+        norm: (Opzionale) Se True, normalizza i valori della funzione di correlazione ad integrale = 1
         gaussian_filter_width: (Opzionale) Parametro 'width' per il filtro Gaussiano.
                                Se None, nessun filtro viene applicato.
         output_in_wavenumbers: (Opzionale) Se True (default), l'asse delle frequenze
@@ -432,6 +467,13 @@ def calculateVDOS(
         print(
             f"  Asse delle frequenze in rad/unità_tempo (step: {delta_omega_for_filon:.4e})."
         )
+
+        if norm:
+            from scipy.integrate import simpson
+
+            spectrum_chat_array /= simpson(
+                y=spectrum_chat_array, x=frequencies_axis_final
+            )
 
     return frequencies_axis_final, spectrum_chat_array, filter_info_to_return
 

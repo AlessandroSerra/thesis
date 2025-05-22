@@ -1,5 +1,3 @@
-import functools
-import multiprocessing
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -12,6 +10,7 @@ from MDtools.dataStructures import Atom, Frame
 DEFAULT_KB_CONSTANT: float = 8.31446261815324e-7
 DEFAULT_HB_OO_DIST_CUTOFF: float = 3.5
 DEFAULT_EPSILON: float = 1e-40
+TRIG_EPSILON: float = 1e-12
 
 
 # ------------------------------------------------------------------
@@ -164,33 +163,253 @@ def _normalize_vector_numba(v_np: np.ndarray, epsilon_np: float) -> np.ndarray:
     return v_np / norm_val
 
 
+# @numba.jit(nopython=True, fastmath=True)
+# def _process_single_frame_numba_jit(
+#     positions: np.ndarray,  # (N_all_atoms, 3)
+#     velocities: np.ndarray,  # (N_all_atoms, 3)
+#     masses: np.ndarray,  # (N_all_atoms,)
+#     molecule_indices_list_of_arrays: numba.typed.List,  # Lista di array [O_idx, H1_idx, H2_idx]
+#     is_H_excited_mask: np.ndarray,  # (N_all_atoms,) maschera booleana
+#     oxygen_indices_for_hb_np: np.ndarray,  # Array di indici globali degli atomi O
+#     kb_const_np: float,
+#     hb_cutoff_const_np: float,
+#     epsilon_const_np: float,
+# ) -> Tuple[float, float, float, float, float, float, float]:
+#     """
+#     Worker Numba JITtato per processare i dati estratti di un singolo frame.
+#     """
+#     sum_T_stretch_exc = 0.0
+#     count_T_stretch_exc = 0
+#     sum_T_stretch_norm = 0.0
+#     count_T_stretch_norm = 0
+#     sum_T_bend = 0.0
+#     count_T_bend = 0
+#     sum_T_hb = 0.0
+#     count_T_hb = 0
+#     sum_T_twist = 0.0
+#     count_T_twist = 0
+#     sum_T_wag = 0.0
+#     count_T_wag = 0
+#     sum_T_rock = 0.0
+#     count_T_rock = 0
+#
+#     for mol_idx in range(len(molecule_indices_list_of_arrays)):
+#         mol_atom_idxs = molecule_indices_list_of_arrays[mol_idx]
+#
+#         O_gidx, H1_gidx, H2_gidx = mol_atom_idxs[0], mol_atom_idxs[1], mol_atom_idxs[2]
+#
+#         m_O_val = masses[O_gidx]
+#         m_H1_val = masses[H1_gidx]
+#         mu_OH1 = (m_O_val * m_H1_val) / (m_O_val + m_H1_val)
+#         d_OH1_vec_np = positions[O_gidx] - positions[H1_gidx]
+#         d_OH1_mag_np = np.linalg.norm(d_OH1_vec_np)
+#
+#         if d_OH1_mag_np >= epsilon_const_np:
+#             u_OH1_hat_np = d_OH1_vec_np / d_OH1_mag_np
+#             v_rel_OH1_np = velocities[O_gidx] - velocities[H1_gidx]
+#             v_stretch_scalar1 = np.dot(v_rel_OH1_np, u_OH1_hat_np)
+#             temp_val1 = (mu_OH1 * v_stretch_scalar1**2) / kb_const_np
+#             if is_H_excited_mask[H1_gidx]:
+#                 sum_T_stretch_exc += temp_val1
+#                 count_T_stretch_exc += 1
+#             else:
+#                 sum_T_stretch_norm += temp_val1
+#                 count_T_stretch_norm += 1
+#
+#         m_H2_val = masses[H2_gidx]
+#         mu_OH2 = (m_O_val * m_H2_val) / (m_O_val + m_H2_val)
+#         d_OH2_vec_np = positions[O_gidx] - positions[H2_gidx]
+#         d_OH2_mag_np = np.linalg.norm(d_OH2_vec_np)
+#         if d_OH2_mag_np >= epsilon_const_np:
+#             u_OH2_hat_np = d_OH2_vec_np / d_OH2_mag_np
+#             v_rel_OH2_np = velocities[O_gidx] - velocities[H2_gidx]
+#             v_stretch_scalar2 = np.dot(v_rel_OH2_np, u_OH2_hat_np)
+#             temp_val2 = (mu_OH2 * v_stretch_scalar2**2) / kb_const_np
+#             if is_H_excited_mask[H2_gidx]:
+#                 sum_T_stretch_exc += temp_val2
+#                 count_T_stretch_exc += 1
+#             else:
+#                 sum_T_stretch_norm += temp_val2
+#                 count_T_stretch_norm += 1
+#
+#         d_O_H1_v_np = positions[H1_gidx] - positions[O_gidx]
+#         d_O_H2_v_np = positions[H2_gidx] - positions[O_gidx]
+#         d_O_H1_m_np = np.linalg.norm(d_O_H1_v_np)
+#         d_O_H2_m_np = np.linalg.norm(d_O_H2_v_np)
+#
+#         if d_O_H1_m_np >= epsilon_const_np and d_O_H2_m_np >= epsilon_const_np:
+#             u_O_H1_h_np = d_O_H1_v_np / d_O_H1_m_np
+#             u_O_H2_h_np = d_O_H2_v_np / d_O_H2_m_np
+#             v_H1_np = velocities[H1_gidx]
+#             v_H2_np = velocities[H2_gidx]
+#             v_H1_perp_np = v_H1_np - (np.dot(v_H1_np, u_O_H1_h_np) * u_O_H1_h_np)
+#             v_H2_perp_np = v_H2_np - (np.dot(v_H2_np, u_O_H2_h_np) * u_O_H2_h_np)
+#             d_H1H2_v_np = positions[H1_gidx] - positions[H2_gidx]
+#             d_H1H2_m_np = np.linalg.norm(d_H1H2_v_np)
+#             if d_H1H2_m_np >= epsilon_const_np:
+#                 u_H1H2_h_np = d_H1H2_v_np / d_H1H2_m_np
+#                 v_bend_scalar_np = np.dot(v_H1_perp_np - v_H2_perp_np, u_H1H2_h_np)
+#                 mu_HH_np = masses[H1_gidx] / 2.0
+#                 T_bend_val = (mu_HH_np * v_bend_scalar_np**2) / kb_const_np
+#                 sum_T_bend += T_bend_val
+#                 count_T_bend += 1
+#
+#         mol_indices_for_lib = mol_atom_idxs
+#
+#         # MODIFIED PART FOR ROBUST ARRAY CREATION IN NUMBA
+#         masses_mol = np.array(
+#             [
+#                 masses[mol_indices_for_lib[0]],
+#                 masses[mol_indices_for_lib[1]],
+#                 masses[mol_indices_for_lib[2]],
+#             ],
+#             dtype=np.float64,
+#         )
+#
+#         positions_mol = np.empty((3, 3), dtype=np.float64)
+#         positions_mol[0, :] = positions[mol_indices_for_lib[0]]
+#         positions_mol[1, :] = positions[mol_indices_for_lib[1]]
+#         positions_mol[2, :] = positions[mol_indices_for_lib[2]]
+#
+#         velocities_mol = np.empty((3, 3), dtype=np.float64)
+#         velocities_mol[0, :] = velocities[mol_indices_for_lib[0]]
+#         velocities_mol[1, :] = velocities[mol_indices_for_lib[1]]
+#         velocities_mol[2, :] = velocities[mol_indices_for_lib[2]]
+#         # END OF MODIFIED PART
+#
+#         M_total_lib_val = np.sum(masses_mol)
+#         if M_total_lib_val >= epsilon_const_np:
+#             R_cm_lib_val = np.zeros(3, dtype=np.float64)  # Explicit dtype
+#             V_cm_lib_val = np.zeros(3, dtype=np.float64)  # Explicit dtype
+#             for k_dim in range(3):
+#                 R_cm_lib_val[k_dim] = (
+#                     np.sum(positions_mol[:, k_dim] * masses_mol) / M_total_lib_val
+#                 )
+#                 V_cm_lib_val[k_dim] = (
+#                     np.sum(velocities_mol[:, k_dim] * masses_mol) / M_total_lib_val
+#                 )
+#
+#             r_prime_lib_val = positions_mol - R_cm_lib_val
+#             v_rel_cm_lib_val = velocities_mol - V_cm_lib_val
+#
+#             vec_OH1_lib_np = positions[H1_gidx] - positions[O_gidx]
+#             vec_OH2_lib_np = positions[H2_gidx] - positions[O_gidx]
+#
+#             norm_OH1 = _normalize_vector_numba(vec_OH1_lib_np, epsilon_const_np)
+#             norm_OH2 = _normalize_vector_numba(vec_OH2_lib_np, epsilon_const_np)
+#
+#             axis1_u_np = _normalize_vector_numba(norm_OH1 + norm_OH2, epsilon_const_np)
+#             cross_OH1_OH2 = np.cross(vec_OH1_lib_np, vec_OH2_lib_np)
+#             axis3_w_np = _normalize_vector_numba(cross_OH1_OH2, epsilon_const_np)
+#             cross_w_u = np.cross(axis3_w_np, axis1_u_np)
+#             axis2_v_np = _normalize_vector_numba(cross_w_u, epsilon_const_np)
+#             cross_u_v_reorth = np.cross(axis1_u_np, axis2_v_np)
+#             axis3_w_np = _normalize_vector_numba(cross_u_v_reorth, epsilon_const_np)
+#
+#             I_11, I_22, I_33 = 0.0, 0.0, 0.0
+#             for i_atom_in_mol in range(3):
+#                 r_p_i = r_prime_lib_val[i_atom_in_mol]
+#                 m_i = masses_mol[i_atom_in_mol]
+#                 r_p_dot_v = np.dot(r_p_i, axis2_v_np)
+#                 r_p_dot_w = np.dot(r_p_i, axis3_w_np)
+#                 I_11 += m_i * (r_p_dot_v**2 + r_p_dot_w**2)
+#                 r_p_dot_u = np.dot(r_p_i, axis1_u_np)
+#                 I_22 += m_i * (r_p_dot_u**2 + r_p_dot_w**2)
+#                 I_33 += m_i * (r_p_dot_u**2 + r_p_dot_v**2)
+#
+#             L_lab_val = np.zeros(3, dtype=np.float64)  # Explicit dtype
+#             for i_atom_in_mol in range(3):
+#                 L_lab_val += masses_mol[i_atom_in_mol] * np.cross(
+#                     r_prime_lib_val[i_atom_in_mol], v_rel_cm_lib_val[i_atom_in_mol]
+#                 )
+#
+#             L1_val = np.dot(L_lab_val, axis1_u_np)
+#             L2_val = np.dot(L_lab_val, axis2_v_np)
+#             L3_val = np.dot(L_lab_val, axis3_w_np)
+#
+#             if I_11 > epsilon_const_np:
+#                 sum_T_twist += L1_val**2 / (I_11 * kb_const_np)
+#                 count_T_twist += 1
+#             if I_22 > epsilon_const_np:
+#                 sum_T_rock += L2_val**2 / (I_22 * kb_const_np)
+#                 count_T_rock += 1
+#             if I_33 > epsilon_const_np:
+#                 sum_T_wag += L3_val**2 / (I_33 * kb_const_np)
+#                 count_T_wag += 1
+#
+#     num_oxygens = len(oxygen_indices_for_hb_np)
+#     if num_oxygens >= 2:
+#         for i_idx_o_list in range(num_oxygens):
+#             O1_gidx_hb = oxygen_indices_for_hb_np[i_idx_o_list]
+#             for j_idx_o_list in range(i_idx_o_list + 1, num_oxygens):
+#                 O2_gidx_hb = oxygen_indices_for_hb_np[j_idx_o_list]
+#                 pos_O1 = positions[O1_gidx_hb]
+#                 pos_O2 = positions[O2_gidx_hb]
+#                 d_O1O2_vec_hb = pos_O1 - pos_O2
+#                 d_O1O2_mag_hb = np.linalg.norm(d_O1O2_vec_hb)
+#
+#                 if epsilon_const_np < d_O1O2_mag_hb < hb_cutoff_const_np:
+#                     u_O1O2_hat_hb = d_O1O2_vec_hb / d_O1O2_mag_hb
+#                     vel_O1 = velocities[O1_gidx_hb]
+#                     vel_O2 = velocities[O2_gidx_hb]
+#                     v_rel_O1O2_hb = vel_O1 - vel_O2
+#                     v_HB_scalar_hb = np.dot(v_rel_O1O2_hb, u_O1O2_hat_hb)
+#                     m_O_for_hb = masses[O1_gidx_hb]
+#                     mu_OO_hb = m_O_for_hb / 2.0
+#                     sum_T_hb += (mu_OO_hb * v_HB_scalar_hb**2) / kb_const_np
+#                     count_T_hb += 1
+#
+#     avg_T_stretch_exc = (
+#         sum_T_stretch_exc / count_T_stretch_exc if count_T_stretch_exc > 0 else np.nan
+#     )
+#     avg_T_stretch_norm = (
+#         sum_T_stretch_norm / count_T_stretch_norm
+#         if count_T_stretch_norm > 0
+#         else np.nan
+#     )
+#     avg_T_bend = sum_T_bend / count_T_bend if count_T_bend > 0 else np.nan
+#     avg_T_hb = sum_T_hb / count_T_hb if count_T_hb > 0 else np.nan
+#     avg_T_twist = sum_T_twist / count_T_twist if count_T_twist > 0 else np.nan
+#     avg_T_wag = sum_T_wag / count_T_wag if count_T_wag > 0 else np.nan
+#     avg_T_rock = sum_T_rock / count_T_rock if count_T_rock > 0 else np.nan
+#
+#     return (
+#         avg_T_stretch_exc,
+#         avg_T_stretch_norm,
+#         avg_T_bend,
+#         avg_T_hb,
+#         avg_T_twist,
+#         avg_T_wag,
+#         avg_T_rock,
+#     )
+
+
 @numba.jit(nopython=True, fastmath=True)
 def _process_single_frame_numba_jit(
-    positions: np.ndarray,  # (N_all_atoms, 3)
-    velocities: np.ndarray,  # (N_all_atoms, 3)
-    masses: np.ndarray,  # (N_all_atoms,)
-    # atom_types: np.ndarray,   # (N_all_atoms,) 0 per O, 1 per H (già usato per creare mol_indices)
-    # original_indices: np.ndarray, # (N_all_atoms,)
-    molecule_indices_list_of_arrays: numba.typed.List,  # Lista di array [O_idx, H1_idx, H2_idx]
-    # Questo è un tipo Numba specifico.
-    is_H_excited_mask: np.ndarray,  # (N_all_atoms,) maschera booleana
-    oxygen_indices_for_hb_np: np.ndarray,  # Array di indici globali degli atomi O
-    # Costanti
+    positions: np.ndarray,
+    velocities: np.ndarray,
+    masses: np.ndarray,
+    molecule_indices_list_of_arrays: numba.typed.List,
+    is_H_excited_mask: np.ndarray,
+    oxygen_indices_for_hb_np: np.ndarray,
     kb_const_np: float,
     hb_cutoff_const_np: float,
     epsilon_const_np: float,
-) -> Tuple[float, float, float, float, float, float, float]:
+    trig_epsilon_np: float,  # Added epsilon for trig functions
+) -> Tuple[
+    float, float, float, float, float, float, float, float
+]:  # Added one more float for T_bend_eq5
     """
     Worker Numba JITtato per processare i dati estratti di un singolo frame.
     """
-    # Inizializza accumulatori (somme e conteggi) per ogni temperatura
-    # Esempio per T_stretch_exc:
     sum_T_stretch_exc = 0.0
     count_T_stretch_exc = 0
     sum_T_stretch_norm = 0.0
     count_T_stretch_norm = 0
     sum_T_bend = 0.0
     count_T_bend = 0
+    sum_T_bend_eq5 = 0.0  # For Equation 5 bend
+    count_T_bend_eq5 = 0  # For Equation 5 bend
     sum_T_hb = 0.0
     count_T_hb = 0
     sum_T_twist = 0.0
@@ -200,45 +419,72 @@ def _process_single_frame_numba_jit(
     sum_T_rock = 0.0
     count_T_rock = 0
 
-    # Loop sulle molecole (definite da molecule_indices_list_of_arrays)
     for mol_idx in range(len(molecule_indices_list_of_arrays)):
-        mol_atom_idxs = molecule_indices_list_of_arrays[
-            mol_idx
-        ]  # [O_gidx, H1_gidx, H2_gidx]
+        mol_atom_idxs = molecule_indices_list_of_arrays[mol_idx]
 
         O_gidx, H1_gidx, H2_gidx = mol_atom_idxs[0], mol_atom_idxs[1], mol_atom_idxs[2]
 
-        # --- Calcolo Stretching (esempio di traduzione) ---
         m_O_val = masses[O_gidx]
-        # Per H1
         m_H1_val = masses[H1_gidx]
-        mu_OH1 = (m_O_val * m_H1_val) / (m_O_val + m_H1_val)
-
-        d_OH1_vec_np = positions[O_gidx] - positions[H1_gidx]  # Array NumPy
-        d_OH1_mag_np = np.linalg.norm(d_OH1_vec_np)
-
-        if d_OH1_mag_np >= epsilon_const_np:  # Evita divisione per zero
-            u_OH1_hat_np = d_OH1_vec_np / d_OH1_mag_np
-            v_rel_OH1_np = velocities[O_gidx] - velocities[H1_gidx]
-            v_stretch_scalar1 = np.dot(v_rel_OH1_np, u_OH1_hat_np)  # np.dot funziona
-            temp_val1 = (mu_OH1 * v_stretch_scalar1**2) / kb_const_np
-
-            if is_H_excited_mask[H1_gidx]:  # Usa la maschera precalcolata
-                sum_T_stretch_exc += temp_val1
-                count_T_stretch_exc += 1
-            else:
-                sum_T_stretch_norm += temp_val1
-                count_T_stretch_norm += 1
-
-        # Similmente per H2
         m_H2_val = masses[H2_gidx]
-        mu_OH2 = (m_O_val * m_H2_val) / (m_O_val + m_H2_val)
-        d_OH2_vec_np = positions[O_gidx] - positions[H2_gidx]
-        d_OH2_mag_np = np.linalg.norm(d_OH2_vec_np)
-        if d_OH2_mag_np >= epsilon_const_np:
-            u_OH2_hat_np = d_OH2_vec_np / d_OH2_mag_np
-            v_rel_OH2_np = velocities[O_gidx] - velocities[H2_gidx]
-            v_stretch_scalar2 = np.dot(v_rel_OH2_np, u_OH2_hat_np)
+
+        # For Eq5: Total mass of the molecule
+        M_total_mol = m_O_val + m_H1_val + m_H2_val
+
+        # --- Stretch Calculations (unchanged) ---
+        mu_OH1 = (m_O_val * m_H1_val) / (m_O_val + m_H1_val)
+        d_OH1_vec_np = positions[O_gidx] - positions[H1_gidx]  # Vector H1->O
+        # For consistency with paper's Eq.3 (vector O->H for d_OH)
+        # For d_OH calculation, paper uses d_OH = vector identifying OH bond.
+        # v_stretch = (v_O - v_H) . d_OH / |d_OH|
+        # If d_OH points from O to H: d_OH_paper = positions[H1_gidx] - positions[O_gidx]
+        d_OH1_paper_vec = positions[H1_gidx] - positions[O_gidx]
+        d_OH1_mag_np = np.linalg.norm(d_OH1_paper_vec)
+
+        if d_OH1_mag_np >= epsilon_const_np:
+            u_OH1_hat_np = d_OH1_paper_vec / d_OH1_mag_np
+            # v_rel_OH1_np = velocities[O_gidx] - velocities[H1_gidx] # Matches (vO - vH)
+            # Paper Eq 3: v_stretch = (v_O - v_H) . (d_OH / |d_OH|)
+            # My code has v_rel_OH1 = v_O - v_H1. u_OH1_hat points H->O in my original stretch.
+            # To match paper for stretch:
+            v_rel_OH1_for_paper_stretch = (
+                velocities[H1_gidx] - velocities[O_gidx]
+            )  # v_H - v_O
+            # The original script calculates T_stretch using d_OH as O->H (implicit) or H->O
+            # d_OH1_vec_np (H1->O). Original u_OH1_hat was H1->O. v_rel was O-H1. (O-H1).(H1->O) = -(H1-O).(H1->O)
+            # This means the original stretch velocity was -(v_H1-v_O) projected on u_OH1
+            # The definition in the paper uses v_stretch = (v_O - v_H) . u_OH (where u_OH is O->H)
+            # Let's keep the script's original stretch definition for now, assuming it's validated,
+            # but be mindful if comparing directly to paper's T_stretch plot values.
+            # For internal coordinate rates (d_dot_OH1), we need (V_H1 - V_O) dot u_OH1_paper
+
+            # Original script stretch calculation:
+            d_OH1_orig_vec_np = positions[O_gidx] - positions[H1_gidx]
+            d_OH1_orig_mag_np = np.linalg.norm(d_OH1_orig_vec_np)
+            if d_OH1_orig_mag_np >= epsilon_const_np:
+                u_OH1_orig_hat_np = d_OH1_orig_vec_np / d_OH1_orig_mag_np
+                v_rel_OH1_orig_np = velocities[O_gidx] - velocities[H1_gidx]
+                v_stretch_scalar1 = np.dot(v_rel_OH1_orig_np, u_OH1_orig_hat_np)
+                temp_val1 = (mu_OH1 * v_stretch_scalar1**2) / kb_const_np
+                if is_H_excited_mask[H1_gidx]:
+                    sum_T_stretch_exc += temp_val1
+                    count_T_stretch_exc += 1
+                else:
+                    sum_T_stretch_norm += temp_val1
+                    count_T_stretch_norm += 1
+
+        # mu_OH2 = (m_O_val * m_H2_val) / (m_O_val + m_H2_val)
+        d_OH2_paper_vec = positions[H2_gidx] - positions[O_gidx]
+        d_OH2_mag_np = np.linalg.norm(d_OH2_paper_vec)
+
+        # Original script stretch calculation for H2:
+        d_OH2_orig_vec_np = positions[O_gidx] - positions[H2_gidx]
+        d_OH2_orig_mag_np = np.linalg.norm(d_OH2_orig_vec_np)
+        if d_OH2_orig_mag_np >= epsilon_const_np:
+            mu_OH2 = (m_O_val * m_H2_val) / (m_O_val + m_H2_val)  # moved here
+            u_OH2_orig_hat_np = d_OH2_orig_vec_np / d_OH2_orig_mag_np
+            v_rel_OH2_orig_np = velocities[O_gidx] - velocities[H2_gidx]
+            v_stretch_scalar2 = np.dot(v_rel_OH2_orig_np, u_OH2_orig_hat_np)
             temp_val2 = (mu_OH2 * v_stretch_scalar2**2) / kb_const_np
             if is_H_excited_mask[H2_gidx]:
                 sum_T_stretch_exc += temp_val2
@@ -247,79 +493,167 @@ def _process_single_frame_numba_jit(
                 sum_T_stretch_norm += temp_val2
                 count_T_stretch_norm += 1
 
-        # --- Calcolo Bending (simile, traducendo la logica) ---
+        # --- Bend Calculation (Original - Eq. 7 from paper) ---
+        # d_O_H1_v_np points O->H1, d_O_H2_v_np points O->H2
         d_O_H1_v_np = positions[H1_gidx] - positions[O_gidx]
         d_O_H2_v_np = positions[H2_gidx] - positions[O_gidx]
-        d_O_H1_m_np = np.linalg.norm(d_O_H1_v_np)
-        d_O_H2_m_np = np.linalg.norm(d_O_H2_v_np)
+        d_O_H1_m_np = np.linalg.norm(d_O_H1_v_np)  # This is d_OH1_mag_np
+        d_O_H2_m_np = np.linalg.norm(d_O_H2_v_np)  # This is d_OH2_mag_np
 
         if d_O_H1_m_np >= epsilon_const_np and d_O_H2_m_np >= epsilon_const_np:
-            u_O_H1_h_np = d_O_H1_v_np / d_O_H1_m_np
-            u_O_H2_h_np = d_O_H2_v_np / d_O_H2_m_np
-
+            u_O_H1_h_np = d_O_H1_v_np / d_O_H1_m_np  # unit vec O->H1
+            u_O_H2_h_np = d_O_H2_v_np / d_O_H2_m_np  # unit vec O->H2
             v_H1_np = velocities[H1_gidx]
             v_H2_np = velocities[H2_gidx]
-
-            # v_H1_perp = v_H1_np - np.dot(v_H1_np, u_O_H1_h_np) * u_O_H1_h_np <- errore di shape, np.dot è scalare
-            # Bisogna fare (scalare) * vettore
             v_H1_perp_np = v_H1_np - (np.dot(v_H1_np, u_O_H1_h_np) * u_O_H1_h_np)
             v_H2_perp_np = v_H2_np - (np.dot(v_H2_np, u_O_H2_h_np) * u_O_H2_h_np)
 
-            d_H1H2_v_np = positions[H1_gidx] - positions[H2_gidx]
+            d_H1H2_v_np = positions[H1_gidx] - positions[H2_gidx]  # H2->H1
             d_H1H2_m_np = np.linalg.norm(d_H1H2_v_np)
-
             if d_H1H2_m_np >= epsilon_const_np:
                 u_H1H2_h_np = d_H1H2_v_np / d_H1H2_m_np
                 v_bend_scalar_np = np.dot(v_H1_perp_np - v_H2_perp_np, u_H1H2_h_np)
-                # m_H è la massa di un idrogeno (es. H1)
-                mu_HH_np = masses[H1_gidx] / 2.0
+                mu_HH_np = (m_H1_val * m_H2_val) / (
+                    m_H1_val + m_H2_val
+                )  # More general reduced mass
+                # Original script was: mu_HH_np = masses[H1_gidx] / 2.0, assumes m_H1=m_H2
                 T_bend_val = (mu_HH_np * v_bend_scalar_np**2) / kb_const_np
                 sum_T_bend += T_bend_val
                 count_T_bend += 1
 
-        # --- Calcolo Librazioni (molto più complesso da tradurre direttamente) ---
-        # Questa parte richiede un'attenta traduzione di:
-        # - Calcolo del centro di massa (CM) e velocità del CM per la molecola [O_gidx, H1_gidx, H2_gidx]
-        # - Posizioni e velocità relative al CM
-        # - Definizione degli assi corpo-fissi (u,v,w) usando i vettori OH1 e OH2
-        #   (richiede _normalize_vector_numba e np.cross)
-        # - Calcolo dei momenti d'inerzia (I_11, I_22, I_33) rispetto a questi assi
-        # - Calcolo del momento angolare (L_lab) e delle sue componenti (L1, L2, L3) sugli assi corpo-fissi
-        # - Calcolo delle temperature librazionali.
-        # È fattibile ma richiede attenzione ai dettagli e all'uso di operazioni Numba-compatibili.
-        # Per brevità, ometto l'implementazione dettagliata qui, ma la logica sarebbe:
+        # --- Bend Calculation (New - Eq. 5 from paper) ---
+        # Needs: d_OH1_paper_vec, d_OH1_mag_np, d_OH2_paper_vec, d_OH2_mag_np (calculated above for stretch part)
+        # u_OH1_paper_hat, u_OH2_paper_hat
+        if (
+            d_OH1_mag_np >= epsilon_const_np
+            and d_OH2_mag_np >= epsilon_const_np
+            and M_total_mol > epsilon_const_np
+        ):
+            u_OH1_paper_hat = d_OH1_paper_vec / d_OH1_mag_np  # O -> H1 unit vector
+            u_OH2_paper_hat = d_OH2_paper_vec / d_OH2_mag_np  # O -> H2 unit vector
 
-        # --- Esempio scheletrico per Librazioni ---
-        mol_indices_for_lib = mol_atom_idxs  # già [O_gidx, H1_gidx, H2_gidx]
+            # Angle theta at O
+            cos_theta_val = np.dot(u_OH1_paper_hat, u_OH2_paper_hat)
+            if cos_theta_val > 1.0:
+                cos_theta_val = 1.0
+            if cos_theta_val < -1.0:
+                cos_theta_val = -1.0
+            theta_val = np.arccos(cos_theta_val)
+            sin_theta_val = np.sin(theta_val)
 
-        # Estrarre masse, posizioni, velocità per questa molecola
+            # Velocities of atoms
+            v_O_lab = velocities[O_gidx]
+            v_H1_lab = velocities[H1_gidx]
+            v_H2_lab = velocities[H2_gidx]
+
+            # Rates of change of internal coordinates: d_dot_OH1, d_dot_OH2, theta_dot
+            # d_dot = (v_H - v_O) . u_OH_paper
+            d_dot_OH1 = np.dot(v_H1_lab - v_O_lab, u_OH1_paper_hat)
+            d_dot_OH2 = np.dot(v_H2_lab - v_O_lab, u_OH2_paper_hat)
+
+            theta_dot = 0.0  # Default if sin_theta_val is too small
+            if abs(sin_theta_val) > trig_epsilon_np:
+                # u_dot = ( (v_H-v_O) - u_OH_paper * d_dot_OH ) / d_OH
+                u_dot_OH1_vec = (
+                    (v_H1_lab - v_O_lab) - u_OH1_paper_hat * d_dot_OH1
+                ) / d_OH1_mag_np
+                u_dot_OH2_vec = (
+                    (v_H2_lab - v_O_lab) - u_OH2_paper_hat * d_dot_OH2
+                ) / d_OH2_mag_np
+                theta_dot = (
+                    -(
+                        np.dot(u_dot_OH1_vec, u_OH2_paper_hat)
+                        + np.dot(u_OH1_paper_hat, u_dot_OH2_vec)
+                    )
+                    / sin_theta_val
+                )
+
+            # 2D representation velocities from Eq.4 derivatives
+            # c_h = cos(theta/2), s_h = sin(theta/2)
+            # d1 = d_OH1_mag_np, d2 = d_OH2_mag_np
+            theta_half = theta_val / 2.0
+            c_h = np.cos(theta_half)
+            s_h = np.sin(theta_half)
+
+            # Using specific masses as discussed in thought process
+            # y_O_dot = (1/M_total_mol) * (m_H1_val * (d_dot_OH1*c_h - d_OH1_mag_np*s_h*theta_dot/2) + \
+            #                              m_H2_val * (d_dot_OH2*c_h - d_OH2_mag_np*s_h*theta_dot/2) )
+            # Paper uses generic m_H for these terms in r_O.
+            # Let's use the m_H from paper's formula for m_H/M terms in r_O, r_H1, r_H2 definition.
+            # If m_H1 != m_H2, the original formula needs clarification. Assuming average m_H for m_H/M term.
+            # For simplicity and adherence to paper's m_H/M, assume m_H is average H mass or m_H1.
+            # Let's use m_H1_val where paper indicates m_H in m_H/M for consistency with structure of eq 4.
+            # The mass M in paper for Eq. 4 is m_O + 2*m_H. Here M_total_mol is m_O+m_H1+m_H2.
+            # If the formula implies m_H1 and m_H2 can be different for the d_OH1 and d_OH2 terms in y_O:
+            # y_O_dot formulation from my thought process:
+            # (m_H_for_M_calc / M_total_mol) used for m_H/M terms. Let m_H_for_M_calc = m_H1_val for now.
+
+            # Re-evaluating Eq. 4: ro = {0, mH/M dOH1 cos(t/2) + mH/M dOH2 cos(t/2)}
+            # This mH/M suggests M = mO + 2mH.
+            # And mH is a single hydrogen mass.
+            # The individual masses m_O_val, m_H1_val, m_H2_val are for K.E. (Eq. 5).
+            # For terms like m_O/M, m_H/M in Eq.4, use M_total_mol as M, and m_H1_val as representative m_H.
+
+            term_mH_over_M = m_H1_val / M_total_mol  # Approximation if mH1~mH2
+            term_mO_over_M = m_O_val / M_total_mol
+
+            # Velocities (Eq. 4 derivatives)
+            # v_O_x_dot = 0.0
+            v_O_y_dot = term_mH_over_M * (
+                (d_dot_OH1 * c_h - d_OH1_mag_np * s_h * (theta_dot / 2.0))
+                + (d_dot_OH2 * c_h - d_OH2_mag_np * s_h * (theta_dot / 2.0))
+            )
+
+            v_H1_x_dot = d_dot_OH1 * s_h + d_OH1_mag_np * c_h * (theta_dot / 2.0)
+            v_H1_y_dot = -term_mO_over_M * (
+                d_dot_OH1 * c_h - d_OH1_mag_np * s_h * (theta_dot / 2.0)
+            )
+
+            # Using literal form of r_H2 from paper for x component
+            v_H2_x_dot = d_dot_OH2 * s_h + d_OH2_mag_np * c_h * (theta_dot / 2.0)
+            v_H2_y_dot = -term_mO_over_M * (
+                d_dot_OH2 * c_h - d_OH2_mag_np * s_h * (theta_dot / 2.0)
+            )
+
+            # Kinetic Energy (Eq. 5)
+            v_O_sq = v_O_y_dot**2  # v_O_x_dot is 0
+            v_H1_sq = v_H1_x_dot**2 + v_H1_y_dot**2
+            v_H2_sq = v_H2_x_dot**2 + v_H2_y_dot**2
+
+            K_bend_eq5 = 0.5 * (
+                m_O_val * v_O_sq + m_H1_val * v_H1_sq + m_H2_val * v_H2_sq
+            )
+            T_bend_eq5_val = K_bend_eq5 / (3 / 2 * kb_const_np)
+
+            sum_T_bend_eq5 += T_bend_eq5_val
+            count_T_bend_eq5 += 1
+
+        # --- Librations (unchanged) ---
+        mol_indices_for_lib = mol_atom_idxs
         masses_mol = np.array(
             [
                 masses[mol_indices_for_lib[0]],
                 masses[mol_indices_for_lib[1]],
                 masses[mol_indices_for_lib[2]],
-            ]
+            ],
+            dtype=np.float64,
         )
-        positions_mol = np.array(
-            [
-                positions[mol_indices_for_lib[0]],
-                positions[mol_indices_for_lib[1]],
-                positions[mol_indices_for_lib[2]],
-            ]
-        )
-        velocities_mol = np.array(
-            [
-                velocities[mol_indices_for_lib[0]],
-                velocities[mol_indices_for_lib[1]],
-                velocities[mol_indices_for_lib[2]],
-            ]
-        )
+
+        positions_mol = np.empty((3, 3), dtype=np.float64)
+        positions_mol[0, :] = positions[mol_indices_for_lib[0]]
+        positions_mol[1, :] = positions[mol_indices_for_lib[1]]
+        positions_mol[2, :] = positions[mol_indices_for_lib[2]]
+
+        velocities_mol = np.empty((3, 3), dtype=np.float64)
+        velocities_mol[0, :] = velocities[mol_indices_for_lib[0]]
+        velocities_mol[1, :] = velocities[mol_indices_for_lib[1]]
+        velocities_mol[2, :] = velocities[mol_indices_for_lib[2]]
 
         M_total_lib_val = np.sum(masses_mol)
         if M_total_lib_val >= epsilon_const_np:
-            R_cm_lib_val = np.zeros(3)
-            V_cm_lib_val = np.zeros(3)
-            for k_dim in range(3):  # Per x,y,z
+            R_cm_lib_val = np.zeros(3, dtype=np.float64)
+            V_cm_lib_val = np.zeros(3, dtype=np.float64)
+            for k_dim in range(3):
                 R_cm_lib_val[k_dim] = (
                     np.sum(positions_mol[:, k_dim] * masses_mol) / M_total_lib_val
                 )
@@ -327,65 +661,54 @@ def _process_single_frame_numba_jit(
                     np.sum(velocities_mol[:, k_dim] * masses_mol) / M_total_lib_val
                 )
 
-            r_prime_lib_val = positions_mol - R_cm_lib_val  # Shape (3,3)
-            v_rel_cm_lib_val = velocities_mol - V_cm_lib_val  # Shape (3,3)
+            r_prime_lib_val = positions_mol - R_cm_lib_val
+            v_rel_cm_lib_val = velocities_mol - V_cm_lib_val
 
-            # Assi corpo-fissi (u, v, w)
-            vec_OH1_lib_np = positions[H1_gidx] - positions[O_gidx]  # dal frame globale
-            vec_OH2_lib_np = positions[H2_gidx] - positions[O_gidx]  # dal frame globale
+            # d_O_H1_v_np and d_O_H2_v_np are already O->H1 and O->H2
+            vec_OH1_lib_np = d_O_H1_v_np
+            vec_OH2_lib_np = d_O_H2_v_np
 
-            # _normalize_vector_numba è definita sopra
             norm_OH1 = _normalize_vector_numba(vec_OH1_lib_np, epsilon_const_np)
             norm_OH2 = _normalize_vector_numba(vec_OH2_lib_np, epsilon_const_np)
 
             axis1_u_np = _normalize_vector_numba(norm_OH1 + norm_OH2, epsilon_const_np)
-
-            # np.cross è supportato da Numba
             cross_OH1_OH2 = np.cross(
                 vec_OH1_lib_np, vec_OH2_lib_np
-            )  # non usare i normalizzati qui per np.cross
+            )  # Uses O->H1, O->H2 vectors
             axis3_w_np = _normalize_vector_numba(cross_OH1_OH2, epsilon_const_np)
-
             cross_w_u = np.cross(axis3_w_np, axis1_u_np)
             axis2_v_np = _normalize_vector_numba(cross_w_u, epsilon_const_np)
-
-            # Re-ortogonalizza w per assicurare la destrorsità, se necessario (come nel codice originale)
-            cross_u_v_reorth = np.cross(axis1_u_np, axis2_v_np)
+            cross_u_v_reorth = np.cross(axis1_u_np, axis2_v_np)  # Re-orthogonalize w
             axis3_w_np = _normalize_vector_numba(cross_u_v_reorth, epsilon_const_np)
 
-            # Momenti d'inerzia I_uu, I_vv, I_ww (I_11, I_22, I_33)
             I_11, I_22, I_33 = 0.0, 0.0, 0.0
-            for i_atom_in_mol in range(3):  # O, H1, H2
-                r_p_i = r_prime_lib_val[i_atom_in_mol]  # Vettore pos relativo al CM
+            for i_atom_in_mol in range(3):
+                r_p_i = r_prime_lib_val[i_atom_in_mol]
                 m_i = masses_mol[i_atom_in_mol]
-
-                # I_uu = sum m_i * ( (r_p_i . v_axis)^2 + (r_p_i . w_axis)^2 )
                 r_p_dot_v = np.dot(r_p_i, axis2_v_np)
                 r_p_dot_w = np.dot(r_p_i, axis3_w_np)
                 I_11 += m_i * (r_p_dot_v**2 + r_p_dot_w**2)
-
                 r_p_dot_u = np.dot(r_p_i, axis1_u_np)
-                # r_p_dot_w (già calcolato)
                 I_22 += m_i * (r_p_dot_u**2 + r_p_dot_w**2)
-
-                # r_p_dot_u, r_p_dot_v (già calcolati)
                 I_33 += m_i * (r_p_dot_u**2 + r_p_dot_v**2)
 
-            # Momento angolare L_lab = sum m_i * (r_prime_i x v_rel_cm_i)
-            L_lab_val = np.zeros(3)
+            L_lab_val = np.zeros(3, dtype=np.float64)
             for i_atom_in_mol in range(3):
                 L_lab_val += masses_mol[i_atom_in_mol] * np.cross(
                     r_prime_lib_val[i_atom_in_mol], v_rel_cm_lib_val[i_atom_in_mol]
                 )
 
-            L1_val = np.dot(L_lab_val, axis1_u_np)  # Twist
-            L2_val = np.dot(L_lab_val, axis2_v_np)  # Rock
-            L3_val = np.dot(L_lab_val, axis3_w_np)  # Wag
+            L1_val = np.dot(L_lab_val, axis1_u_np)
+            L2_val = np.dot(L_lab_val, axis2_v_np)
+            L3_val = np.dot(L_lab_val, axis3_w_np)
 
-            if I_11 > epsilon_const_np:
-                sum_T_twist += L1_val**2 / (
-                    I_11 * kb_const_np
-                )  # Aggiunto + epsilon_const_np al denominatore per sicurezza
+            if I_11 > epsilon_const_np:  # Use epsilon_const_np for inertia
+                sum_T_twist += (
+                    L1_val** 2 / (I_11 * kb_const_np)
+                )  # Paper uses 1/2 I w^2 / kb = L^2/(2 I kb). Check if factor of 2 is needed.
+                # Original script: L^2 / (I * kb). This corresponds to 2 * K.E / kb.
+                # If T = 2 K.E / kb, then it's correct. If T = K.E / (0.5 kb), also correct.
+                # Standard K.E_rot = 0.5 * I * w^2.  T = I * w^2 / kb. So L^2 / (I * kb). This is correct.
                 count_T_twist += 1
             if I_22 > epsilon_const_np:
                 sum_T_rock += L2_val**2 / (I_22 * kb_const_np)
@@ -394,16 +717,13 @@ def _process_single_frame_numba_jit(
                 sum_T_wag += L3_val**2 / (I_33 * kb_const_np)
                 count_T_wag += 1
 
-    # --- Calcolo Legami H (tra molecole) ---
-    # Iterare su coppie di Ossigeni (usando oxygen_indices_for_hb_np)
+    # --- Hydrogen Bond (unchanged) ---
     num_oxygens = len(oxygen_indices_for_hb_np)
     if num_oxygens >= 2:
         for i_idx_o_list in range(num_oxygens):
             O1_gidx_hb = oxygen_indices_for_hb_np[i_idx_o_list]
-
             for j_idx_o_list in range(i_idx_o_list + 1, num_oxygens):
                 O2_gidx_hb = oxygen_indices_for_hb_np[j_idx_o_list]
-
                 pos_O1 = positions[O1_gidx_hb]
                 pos_O2 = positions[O2_gidx_hb]
                 d_O1O2_vec_hb = pos_O1 - pos_O2
@@ -415,15 +735,13 @@ def _process_single_frame_numba_jit(
                     vel_O2 = velocities[O2_gidx_hb]
                     v_rel_O1O2_hb = vel_O1 - vel_O2
                     v_HB_scalar_hb = np.dot(v_rel_O1O2_hb, u_O1O2_hat_hb)
-
-                    # Assumiamo che la massa di O1 e O2 sia la stessa
-                    m_O_for_hb = masses[O1_gidx_hb]
-                    mu_OO_hb = m_O_for_hb / 2.0
-
+                    m_O_for_hb = masses[O1_gidx_hb]  # mass of one oxygen
+                    mu_OO_hb = (
+                        m_O_for_hb / 2.0
+                    )  # Reduced mass for two identical oxygens
                     sum_T_hb += (mu_OO_hb * v_HB_scalar_hb**2) / kb_const_np
                     count_T_hb += 1
 
-    # Calcola medie (evita divisione per zero)
     avg_T_stretch_exc = (
         sum_T_stretch_exc / count_T_stretch_exc if count_T_stretch_exc > 0 else np.nan
     )
@@ -433,6 +751,9 @@ def _process_single_frame_numba_jit(
         else np.nan
     )
     avg_T_bend = sum_T_bend / count_T_bend if count_T_bend > 0 else np.nan
+    avg_T_bend_eq5 = (
+        sum_T_bend_eq5 / count_T_bend_eq5 if count_T_bend_eq5 > 0 else np.nan
+    )  # Avg for Eq5 bend
     avg_T_hb = sum_T_hb / count_T_hb if count_T_hb > 0 else np.nan
     avg_T_twist = sum_T_twist / count_T_twist if count_T_twist > 0 else np.nan
     avg_T_wag = sum_T_wag / count_T_wag if count_T_wag > 0 else np.nan
@@ -442,6 +763,7 @@ def _process_single_frame_numba_jit(
         avg_T_stretch_exc,
         avg_T_stretch_norm,
         avg_T_bend,
+        avg_T_bend_eq5,  # Added new temperature
         avg_T_hb,
         avg_T_twist,
         avg_T_wag,
@@ -457,6 +779,7 @@ def analyze_temps_numba(
     kb_constant: float = DEFAULT_KB_CONSTANT,
     hb_cutoff: float = DEFAULT_HB_OO_DIST_CUTOFF,
     epsilon_val: float = DEFAULT_EPSILON,
+    trig_epsilon_np: float = TRIG_EPSILON,
     # Aggiungi un flag per abilitare la parallelizzazione Numba sui frame
     parallel_numba_frames: bool = True,
 ) -> Dict[str, List[float]]:
@@ -498,7 +821,7 @@ def analyze_temps_numba(
     num_frames = len(trajs_data)
     # Prealloca array per i risultati
     # (7 temperature, num_frames)
-    results_array = np.full((num_frames, 7), np.nan, dtype=np.float64)
+    results_array = np.full((num_frames, 8), np.nan, dtype=np.float64)
 
     # Converti exc_indexes_set in array NumPy per Numba JIT function
     exc_indices_np_for_jit = np.array(list(exc_indexes_set), dtype=np.int32)
@@ -577,7 +900,9 @@ def analyze_temps_numba(
                 kb_constant,
                 hb_cutoff,
                 epsilon_val,
+                trig_epsilon_np,
             )
+
             results_array[i, :] = np.array(temps_tuple)
         except Exception as e_jit:
             print(f"Errore durante l'esecuzione JIT per frame {i}: {e_jit}")
@@ -592,10 +917,11 @@ def analyze_temps_numba(
     frame_avg_T_stretch_exc_list = list(results_array[:, 0])
     frame_avg_T_stretch_norm_list = list(results_array[:, 1])
     frame_avg_T_bend_list = list(results_array[:, 2])
-    frame_avg_T_hb_list = list(results_array[:, 3])
-    frame_avg_T_twist_list = list(results_array[:, 4])
-    frame_avg_T_wag_list = list(results_array[:, 5])
-    frame_avg_T_rock_list = list(results_array[:, 6])
+    frame_avg_T_bend_eq5_list = list(results_array[:, 3])  # Nuovo per Eq5
+    frame_avg_T_hb_list = list(results_array[:, 4])
+    frame_avg_T_twist_list = list(results_array[:, 5])
+    frame_avg_T_wag_list = list(results_array[:, 6])
+    frame_avg_T_rock_list = list(results_array[:, 7])
 
     # Calcola medie complessive (come nel tuo codice originale)
     # ... (uso di robust_nanmean) ...
@@ -605,10 +931,30 @@ def analyze_temps_numba(
         return float(np.mean(valid_values)) if valid_values else np.nan
 
     print_overall_avg_T_stretch_exc = robust_nanmean(frame_avg_T_stretch_exc_list)
-    # ... calcola le altre medie ...
+    print_overall_avg_T_stretch_norm = robust_nanmean(frame_avg_T_stretch_norm_list)
+    print_overall_avg_T_bend = robust_nanmean(frame_avg_T_bend_list)
+    print_overall_avg_T_bend_eq5 = robust_nanmean(
+        frame_avg_T_bend_eq5_list
+    )  # Nuovo per Eq5
+    print_overall_avg_T_hb = robust_nanmean(frame_avg_T_hb_list)
+    print_overall_avg_T_twist = robust_nanmean(frame_avg_T_twist_list)
+    print_overall_avg_T_wag = robust_nanmean(frame_avg_T_wag_list)
+    print_overall_avg_T_rock = robust_nanmean(frame_avg_T_rock_list)
+
     print(
         f"Overall Avg T_stretch_exc (Numba): {print_overall_avg_T_stretch_exc:.2f} K (esempio)"
     )
+    print(
+        f"Overall Avg T_stretch_norm (Numba): {print_overall_avg_T_stretch_norm:.2f} K"
+    )
+    print(f"Overall Avg T_bend (Numba): {print_overall_avg_T_bend:.2f} K")
+    print(
+        f"Overall Avg T_bend_eq5 (Numba): {print_overall_avg_T_bend_eq5:.2f} K"
+    )  # Nuovo per Eq5
+    print(f"Overall Avg T_hb (Numba): {print_overall_avg_T_hb:.2f} K")
+    print(f"Overall Avg T_twist (Numba): {print_overall_avg_T_twist:.2f} K")
+    print(f"Overall Avg T_wag (Numba): {print_overall_avg_T_wag:.2f} K")
+    print(f"Overall Avg T_rock (Numba): {print_overall_avg_T_rock:.2f} K")
 
     overall_end_time = time.time()
     print(
@@ -619,433 +965,10 @@ def analyze_temps_numba(
         "stretch_excited_H": frame_avg_T_stretch_exc_list,
         "stretch_normal_H": frame_avg_T_stretch_norm_list,
         "bend_HOH": frame_avg_T_bend_list,
+        "bend_HOH_eq5": frame_avg_T_bend_eq5_list,  # Nuovo per Eq5
         "hb": frame_avg_T_hb_list,
         "libr_twist": frame_avg_T_twist_list,
         "libr_wag": frame_avg_T_wag_list,
         "libr_rock": frame_avg_T_rock_list,
-    }
-    return returned_data
-
-
-# ------------------------------------------------------------------
-#                 MULTIPROCESSING IMPLEMENTATION
-# ------------------------------------------------------------------
-
-
-# --- Inner Helper Function (Not intended for direct external use) ---
-def _normalize_vector(v: np.ndarray, epsilon: float) -> np.ndarray:
-    """Normalizes a vector, handling near-zero norms."""
-    norm = np.linalg.norm(v)
-    if norm < epsilon:
-        return np.zeros_like(v)
-    return v / norm
-
-
-# --- Inner Worker Function (for parallel processing, not for direct external use) ---
-def _process_single_frame_worker(
-    frame_data_tuple: Tuple[int, Frame],
-    exc_indexes_set_arg: Set[int],
-    unwrapped_coords: bool,
-    kb_const: float,
-    hb_cutoff_const: float,
-    epsilon_const: float,
-) -> Tuple[float, float, float, float, float, float, float]:
-    """
-    Processes a single frame to calculate various molecular temperatures.
-    Returns a tuple of 7 temperatures:
-    (T_stretch_exc, T_stretch_norm, T_bend, T_hb, T_twist, T_wag, T_rock)
-    Each can be np.nan if not calculable for the frame.
-    """
-    frame_idx, current_frame = frame_data_tuple
-
-    # Helper function to get the right position based on flag
-    def get_position(atom: Atom) -> np.ndarray:
-        if (
-            unwrapped_coords
-            and hasattr(atom, "unwrapped_position")
-            and atom.unwrapped_position is not None
-        ):
-            return atom.unwrapped_position
-        return atom.position
-
-    molecules_in_frame: List[List[Atom]] = current_frame.molecules
-    T_stretch_exc_frame: List[float] = []
-    T_stretch_norm_frame: List[float] = []
-    T_bend_frame: List[float] = []
-    T_hb_frame: List[float] = []  # For H-bonds between molecules
-    T_twist_mol: List[float] = []  # Per-molecule librational temps
-    T_wag_mol: List[float] = []
-    T_rock_mol: List[float] = []
-
-    for mol_idx, molecule_atoms in enumerate(molecules_in_frame):
-        if not isinstance(molecule_atoms, list) or len(molecule_atoms) != 3:
-            continue
-
-        O_atom: Optional[Atom] = None
-        H1_atom: Optional[Atom] = None
-        H2_atom: Optional[Atom] = None
-        temp_h_atoms: List[Atom] = []
-
-        try:
-            for atom in molecule_atoms:
-                # Basic attribute check
-                if not all(
-                    hasattr(atom, attr)
-                    for attr in ["atom_string", "index", "mass", "position", "velocity"]
-                ):
-                    continue
-                if atom.atom_string == "O":
-                    O_atom = atom
-                elif atom.atom_string == "H":
-                    temp_h_atoms.append(atom)
-
-            if O_atom and len(temp_h_atoms) == 2:
-                # A simple way to get H1 and H2; could be refined if order matters significantly
-                H1_atom, H2_atom = temp_h_atoms[0], temp_h_atoms[1]
-            else:
-                continue
-        except AttributeError:  # Should be caught by hasattr checks mostly
-            continue
-
-        if not (
-            O_atom and H1_atom and H2_atom
-        ):  # Ensure all three were found and assigned
-            continue
-
-        # --- Vibrational Temperatures (Stretching, Bending) for the current molecule ---
-        try:
-            m_O, m_H = O_atom.mass, H1_atom.mass
-            mu_OH = (m_O * m_H) / (m_O + m_H)
-
-            for h_atom_current in [H1_atom, H2_atom]:  # OH Stretching
-                d_OH_vec = get_position(O_atom) - get_position(h_atom_current)
-                d_OH_mag = np.linalg.norm(d_OH_vec)
-                if d_OH_mag < epsilon_const:
-                    continue
-                u_OH_hat = d_OH_vec / d_OH_mag
-                v_rel_OH = O_atom.velocity - h_atom_current.velocity
-                v_stretch_scalar = np.dot(v_rel_OH, u_OH_hat)
-                temp_val = (mu_OH * v_stretch_scalar**2) / kb_const
-                if h_atom_current.index in exc_indexes_set_arg:
-                    T_stretch_exc_frame.append(temp_val)
-                else:
-                    T_stretch_norm_frame.append(temp_val)
-
-            # HOH Bending
-            d_O_H1_vec = get_position(H1_atom) - get_position(O_atom)
-            d_O_H2_vec = get_position(H2_atom) - get_position(O_atom)
-            d_O_H1_mag = np.linalg.norm(d_O_H1_vec)
-            d_O_H2_mag = np.linalg.norm(d_O_H2_vec)
-
-            if d_O_H1_mag < epsilon_const or d_O_H2_mag < epsilon_const:
-                continue
-            u_O_H1_hat = d_O_H1_vec / d_O_H1_mag
-            u_O_H2_hat = d_O_H2_vec / d_O_H2_mag
-
-            v_H1_perp = (
-                H1_atom.velocity - np.dot(H1_atom.velocity, u_O_H1_hat) * u_O_H1_hat
-            )
-            v_H2_perp = (
-                H2_atom.velocity - np.dot(H2_atom.velocity, u_O_H2_hat) * u_O_H2_hat
-            )
-
-            d_H1H2_vec = get_position(H1_atom) - get_position(H2_atom)
-            d_H1H2_mag = np.linalg.norm(d_H1H2_vec)
-            if d_H1H2_mag < epsilon_const:
-                continue
-            u_H1H2_hat = d_H1H2_vec / d_H1H2_mag
-
-            v_bend_scalar = np.dot(v_H1_perp - v_H2_perp, u_H1H2_hat)
-            mu_HH = m_H / 2.0  # Effective mass for H-H bending mode
-            T_bend_frame.append((mu_HH * v_bend_scalar**2) / kb_const)
-        except Exception:
-            pass  # Skip this molecule for vib if error occurs
-
-        # --- Librational Temperatures for the current molecule ---
-        try:
-            atoms_in_mol_lib: List[Atom] = [O_atom, H1_atom, H2_atom]
-            masses_lib = np.array([atom.mass for atom in atoms_in_mol_lib])
-            positions_lib = np.array([get_position(atom) for atom in atoms_in_mol_lib])
-            velocities_lib = np.array([atom.velocity for atom in atoms_in_mol_lib])
-
-            M_total_lib = np.sum(masses_lib)
-            if M_total_lib < epsilon_const:
-                continue
-
-            R_cm_lib = (
-                np.sum(positions_lib * masses_lib[:, np.newaxis], axis=0) / M_total_lib
-            )
-            V_cm_lib = (
-                np.sum(velocities_lib * masses_lib[:, np.newaxis], axis=0) / M_total_lib
-            )
-
-            r_prime_lib = positions_lib - R_cm_lib  # positions relative to CM
-            v_rel_cm_lib = velocities_lib - V_cm_lib  # velocities relative to CM
-
-            vec_OH1_lib = get_position(H1_atom) - get_position(O_atom)
-            vec_OH2_lib = get_position(H2_atom) - get_position(O_atom)
-
-            # Define body-fixed axes (u: bisector, w: normal to plane, v: in-plane perp to u)
-            axis1_u = _normalize_vector(
-                _normalize_vector(vec_OH1_lib, epsilon_const)
-                + _normalize_vector(vec_OH2_lib, epsilon_const),
-                epsilon_const,
-            )
-            axis3_w = _normalize_vector(
-                np.cross(vec_OH1_lib, vec_OH2_lib), epsilon_const
-            )
-            axis2_v = _normalize_vector(np.cross(axis3_w, axis1_u), epsilon_const)
-            axis3_w = _normalize_vector(
-                np.cross(axis1_u, axis2_v), epsilon_const
-            )  # Re-orthogonalize
-
-            # Moments of Inertia
-            I_11, I_22, I_33 = 0.0, 0.0, 0.0
-            for i in range(3):  # O, H1, H2
-                r_p_on_axis2 = np.dot(r_prime_lib[i], axis2_v)
-                r_p_on_axis3 = np.dot(r_prime_lib[i], axis3_w)
-                I_11 += masses_lib[i] * (r_p_on_axis2**2 + r_p_on_axis3**2)
-
-                r_p_on_axis1 = np.dot(r_prime_lib[i], axis1_u)
-                I_22 += masses_lib[i] * (r_p_on_axis1**2 + r_p_on_axis3**2)
-
-                I_33 += masses_lib[i] * (r_p_on_axis1**2 + r_p_on_axis2**2)
-
-            # Angular momentum
-            L_lab_lib = np.zeros(3)
-            for i in range(3):
-                L_lab_lib += masses_lib[i] * np.cross(r_prime_lib[i], v_rel_cm_lib[i])
-
-            L1 = np.dot(L_lab_lib, axis1_u)  # Component along u (twist)
-            L2 = np.dot(L_lab_lib, axis2_v)  # Component along v (rock)
-            L3 = np.dot(L_lab_lib, axis3_w)  # Component along w (wag)
-
-            if I_11 > epsilon_const:
-                T_twist_mol.append(L1**2 / (I_11 * kb_const + epsilon_const))
-            if I_22 > epsilon_const:
-                T_rock_mol.append(L2**2 / (I_22 * kb_const + epsilon_const))
-            if I_33 > epsilon_const:
-                T_wag_mol.append(L3**2 / (I_33 * kb_const + epsilon_const))
-        except Exception:
-            pass  # Skip this molecule for lib if error occurs
-
-    # --- Hydrogen Bonds (calculated once per frame, between molecules) ---
-    num_molecules_in_current_frame = len(molecules_in_frame)
-    if num_molecules_in_current_frame >= 2:
-        for i in range(num_molecules_in_current_frame):
-            mol1_atoms_list = molecules_in_frame[i]
-            O1_hb: Optional[Atom] = None
-            try:  # Find Oxygen in molecule i
-                for atom_m1 in mol1_atoms_list:
-                    if (
-                        hasattr(atom_m1, "atom_string")
-                        and atom_m1.atom_string == "O"
-                        and all(
-                            hasattr(atom_m1, attr)
-                            for attr in ["mass", "position", "velocity"]
-                        )
-                    ):
-                        O1_hb = atom_m1
-                        break
-            except AttributeError:
-                continue
-            if O1_hb is None:
-                continue
-
-            for j in range(i + 1, num_molecules_in_current_frame):
-                mol2_atoms_list = molecules_in_frame[j]
-                O2_hb: Optional[Atom] = None
-                try:  # Find Oxygen in molecule j
-                    for atom_m2 in mol2_atoms_list:
-                        if (
-                            hasattr(atom_m2, "atom_string")
-                            and atom_m2.atom_string == "O"
-                            and all(
-                                hasattr(atom_m2, attr)
-                                for attr in ["mass", "position", "velocity"]
-                            )
-                        ):
-                            O2_hb = atom_m2
-                            break
-                except AttributeError:
-                    continue
-                if O2_hb is None:
-                    continue
-
-                try:  # Calculate H-bond temperature
-                    d_O1O2_vec = get_position(O1_hb) - get_position(O2_hb)
-                    d_O1O2_mag = np.linalg.norm(d_O1O2_vec)
-                    if epsilon_const < d_O1O2_mag < hb_cutoff_const:
-                        u_O1O2_hat = d_O1O2_vec / d_O1O2_mag
-                        v_rel_O1O2 = O1_hb.velocity - O2_hb.velocity
-                        v_HB_scalar = np.dot(v_rel_O1O2, u_O1O2_hat)
-                        mu_OO = O1_hb.mass / 2.0  # Effective mass for O-O pair
-                        T_hb_frame.append((mu_OO * v_HB_scalar**2) / kb_const)
-                except Exception:
-                    pass  # Skip H-bond pair if error
-
-    # Calculate average for the frame
-    avg_T_stretch_exc = (
-        float(np.mean(T_stretch_exc_frame)) if T_stretch_exc_frame else np.nan
-    )
-    avg_T_stretch_norm = (
-        float(np.mean(T_stretch_norm_frame)) if T_stretch_norm_frame else np.nan
-    )
-    avg_T_bend = float(np.mean(T_bend_frame)) if T_bend_frame else np.nan
-    avg_T_hb = (
-        float(np.mean(T_hb_frame)) if T_hb_frame else np.nan
-    )  # Avg H-bond temps for the frame
-    avg_T_twist = float(np.mean(T_twist_mol)) if T_twist_mol else np.nan
-    avg_T_wag = float(np.mean(T_wag_mol)) if T_wag_mol else np.nan
-    avg_T_rock = float(np.mean(T_rock_mol)) if T_rock_mol else np.nan
-
-    return (
-        avg_T_stretch_exc,
-        avg_T_stretch_norm,
-        avg_T_bend,
-        avg_T_hb,
-        avg_T_twist,
-        avg_T_wag,
-        avg_T_rock,
-    )
-
-
-# --- Main Public Function ---
-def analyze_temps_mpi(
-    trajs_data: List[Frame],
-    exc_indexes_file_path: str,
-    unwrapped_coords: bool = False,
-    num_processes: Optional[int] = None,
-    kb_constant: float = DEFAULT_KB_CONSTANT,
-    hb_cutoff: float = DEFAULT_HB_OO_DIST_CUTOFF,
-    epsilon_val: float = DEFAULT_EPSILON,
-) -> Dict[str, List[float]]:
-    """
-    Analyzes trajectory data to calculate and optionally plot molecular temperatures.
-
-    Args:
-        trajs_data: List of Frame objects. Each Frame contains molecules (lists of AtomType).
-                    AtomType objects must have 'index', 'atom_string', 'mass',
-                    'position' (np.array in Å), and 'velocity' (np.array in Å/fs).
-        exc_indexes_file_path: Path to the directory containing 'nnp-indexes.dat' for excited atoms.
-        time_step_fs: Time step between frames in femtoseconds. If None, plots against frame number.
-        num_processes: Number of processes to use for parallel computation.
-                       If None or <=0, uses all available CPU cores.
-        kb_constant: Boltzmann constant in (amu * Å^2 / (fs^2 * K)).
-        hb_cutoff: Cutoff distance for O-O in hydrogen bonds (Angstroms).
-        epsilon_val: Small value to prevent division by zero.
-        plot_results: If True, generates and shows a plot of temperature evolution.
-
-    Returns:
-        A dictionary where keys are temperature names (e.g., 'stretch_exc', 'bend')
-        and values are lists of the average temperature for each frame.
-    """
-    if len(trajs_data) <= 0:
-        raise ValueError(f"No frames provided in {trajs_data}.")
-
-    print(f"Analyzing trajectory with {len(trajs_data)} frames.")
-    overall_start_time = time.time()
-
-    # Prepare list of (index, frame_object) for the worker
-    indexed_trajs_list: List[Tuple[int, Frame]] = list(enumerate(trajs_data))
-
-    # Load excited atom indices
-    exc_indexes_set_loaded: Set[int] = set()
-    try:
-        exc_indexes_array = np.loadtxt(exc_indexes_file_path, dtype=int)
-        if exc_indexes_array.ndim > 0:
-            exc_indexes_set_loaded = set(int(i) for i in exc_indexes_array.flatten())
-        else:
-            exc_indexes_set_loaded = {int(exc_indexes_array)}
-
-        print(
-            f"Loaded {len(exc_indexes_set_loaded)} excited atom indices from '{exc_indexes_file_path}'."
-        )
-    except FileNotFoundError:
-        print(
-            f"Warning: File not found - '{exc_indexes_file_path}'. No excited H-atom differentiation for stretch."
-        )
-    except Exception as e:
-        print(
-            f"Error loading '{exc_indexes_file_path}': {e}. No excited H-atom differentiation."
-        )
-
-    # Determine number of processes for multiprocessing
-    actual_num_processes: int
-    if num_processes is None or num_processes <= 0:
-        actual_num_processes = multiprocessing.cpu_count()
-    else:
-        actual_num_processes = num_processes
-    print(f"Starting parallel processing with {actual_num_processes} processes...")
-
-    # Create a partial function with fixed arguments for the worker
-    # The worker _process_single_frame_worker will use these constants
-    partial_worker_fn = functools.partial(
-        _process_single_frame_worker,
-        exc_indexes_set_arg=exc_indexes_set_loaded,
-        unwrapped_coords=unwrapped_coords,
-        kb_const=kb_constant,
-        hb_cutoff_const=hb_cutoff,
-        epsilon_const=epsilon_val,
-    )
-
-    pool_start_time = time.time()
-    results: List[Tuple[float, float, float, float, float, float, float]]
-    with multiprocessing.Pool(processes=actual_num_processes) as pool:
-        results = pool.map(partial_worker_fn, indexed_trajs_list)
-    pool_end_time = time.time()
-    print(
-        f"Parallel processing of frames finished in {pool_end_time - pool_start_time:.2f} seconds."
-    )
-
-    # Unpack results - 7 temperatures
-    frame_avg_T_stretch_exc_list = [res[0] for res in results]
-    frame_avg_T_stretch_norm_list = [res[1] for res in results]
-    frame_avg_T_bend_list = [res[2] for res in results]
-    frame_avg_T_hb_list = [res[3] for res in results]
-    frame_avg_T_twist_list = [res[4] for res in results]
-    frame_avg_T_wag_list = [res[5] for res in results]
-    frame_avg_T_rock_list = [res[6] for res in results]
-
-    # Robust mean calculation function
-    def robust_nanmean(lst: List[float]) -> float:
-        # Filters out NaNs then calculates mean; returns NaN if all are NaN or list is empty
-        valid_values = [x for x in lst if not np.isnan(x)]
-        return float(np.mean(valid_values)) if valid_values else np.nan
-
-    overall_avg_T_stretch_exc = robust_nanmean(frame_avg_T_stretch_exc_list)
-    overall_avg_T_stretch_norm = robust_nanmean(frame_avg_T_stretch_norm_list)
-    overall_avg_T_bend = robust_nanmean(frame_avg_T_bend_list)
-    overall_avg_T_hb = robust_nanmean(frame_avg_T_hb_list)
-    overall_avg_T_twist = robust_nanmean(frame_avg_T_twist_list)
-    overall_avg_T_wag = robust_nanmean(frame_avg_T_wag_list)
-    overall_avg_T_rock = robust_nanmean(frame_avg_T_rock_list)
-
-    print("-" * 50)
-    print("OVERALL AVERAGE TEMPERATURES (K)")
-    print("-" * 50)
-    print(f"OH Stretching (Excited H): {overall_avg_T_stretch_exc:.2f}")
-    print(f"OH Stretching (Normal H):  {overall_avg_T_stretch_norm:.2f}")
-    print(f"HOH Bending:               {overall_avg_T_bend:.2f}")
-    print(f"Hydrogen Bond:             {overall_avg_T_hb:.2f}")
-    print(f"Librational Twist:         {overall_avg_T_twist:.2f}")
-    print(f"Librational Wag:           {overall_avg_T_wag:.2f}")
-    print(f"Librational Rock:          {overall_avg_T_rock:.2f}")
-    print("-" * 50)
-
-    overall_end_time = time.time()
-    print(
-        f"Total analysis function execution time: {overall_end_time - overall_start_time:.2f} seconds."
-    )
-
-    # Prepare data to return
-    returned_data = {
-        "stretch_excited_H": frame_avg_T_stretch_exc_list,
-        "stretch_normal_H": frame_avg_T_stretch_norm_list,
-        "bend_HOH": frame_avg_T_bend_list,
-        "hydrogen_bond_OO": frame_avg_T_hb_list,
-        "libration_twist": frame_avg_T_twist_list,
-        "libration_wag": frame_avg_T_wag_list,
-        "libration_rock": frame_avg_T_rock_list,
     }
     return returned_data

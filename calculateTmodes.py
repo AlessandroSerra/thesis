@@ -154,7 +154,7 @@ def _prepare_frame_data_for_numba(
 
 
 @numba.jit(
-    nopython=True, fastmath=True
+    nopython=True, fastmath=False
 )  # parallel=False, perché opera su un singolo frame
 def _normalize_vector_numba(v_np: np.ndarray, epsilon_np: float) -> np.ndarray:
     norm_val = np.linalg.norm(v_np)  # Numba supporta np.linalg.norm
@@ -555,7 +555,7 @@ def _normalize_vector_numba(v_np: np.ndarray, epsilon_np: float) -> np.ndarray:
 #     )
 
 
-@numba.jit(nopython=True, fastmath=True)
+@numba.jit(nopython=True, fastmath=False)
 def _process_single_frame_numba_jit(
     positions: np.ndarray,
     velocities: np.ndarray,
@@ -594,13 +594,12 @@ def _process_single_frame_numba_jit(
     count_T_bend_norm = 0
     sum_T_bend_exc = 0.0
     count_T_bend_exc = 0
-    sum_T_bend_eq5_norm = 0.0  # For Equation 5 bend - normal
-    count_T_bend_eq5_norm = 0  # For Equation 5 bend - normal
-    sum_T_bend_eq5_exc = 0.0  # For Equation 5 bend - excited
-    count_T_bend_eq5_exc = 0  # For Equation 5 bend - excited
+    sum_T_bend_eq5_norm = 0.0
+    count_T_bend_eq5_norm = 0
+    sum_T_bend_eq5_exc = 0.0
+    count_T_bend_eq5_exc = 0
     sum_T_hb = 0.0
     count_T_hb = 0
-    # Split libration modes into normal and excited
     sum_T_twist_norm = 0.0
     count_T_twist_norm = 0
     sum_T_twist_exc = 0.0
@@ -623,21 +622,16 @@ def _process_single_frame_numba_jit(
         m_H1_val = masses[H1_gidx]
         m_H2_val = masses[H2_gidx]
 
-        # For Eq5: Total mass of the molecule
+        # Total mass of the molecule
         M_total_mol = m_O_val + m_H1_val + m_H2_val
 
-        # --- Stretch Calculations (unchanged) ---
+        # --- Stretch Calculations ---
         mu_OH1 = (m_O_val * m_H1_val) / (m_O_val + m_H1_val)
-        d_OH1_vec_np = positions[O_gidx] - positions[H1_gidx]  # Vector H1->O
-        # For consistency with paper's Eq.3 (vector O->H for d_OH)
-        # For d_OH calculation, paper uses d_OH = vector identifying OH bond.
-        # v_stretch = (v_O - v_H) . d_OH / |d_OH|
-        # If d_OH points from O to H: d_OH_paper = positions[H1_gidx] - positions[O_gidx]
         d_OH1_paper_vec = positions[H1_gidx] - positions[O_gidx]
         d_OH1_mag_np = np.linalg.norm(d_OH1_paper_vec)
 
+        # H1 atom
         if d_OH1_mag_np >= epsilon_const_np:
-            # Original script stretch calculation:
             d_OH1_orig_vec_np = positions[O_gidx] - positions[H1_gidx]
             d_OH1_orig_mag_np = np.linalg.norm(d_OH1_orig_vec_np)
             if d_OH1_orig_mag_np >= epsilon_const_np:
@@ -652,10 +646,10 @@ def _process_single_frame_numba_jit(
                     sum_T_stretch_norm += temp_val1
                     count_T_stretch_norm += 1
 
+        # H2 atom
         d_OH2_paper_vec = positions[H2_gidx] - positions[O_gidx]
         d_OH2_mag_np = np.linalg.norm(d_OH2_paper_vec)
 
-        # Original script stretch calculation for H2:
         d_OH2_orig_vec_np = positions[O_gidx] - positions[H2_gidx]
         d_OH2_orig_mag_np = np.linalg.norm(d_OH2_orig_vec_np)
         if d_OH2_orig_mag_np >= epsilon_const_np:
@@ -671,7 +665,7 @@ def _process_single_frame_numba_jit(
                 sum_T_stretch_norm += temp_val2
                 count_T_stretch_norm += 1
 
-        # --- Bend Calculation (Original - Eq. 7 from paper) ---
+        # --- Bend Calculation (vels) ---
         # d_O_H1_v_np points O->H1, d_O_H2_v_np points O->H2
         d_O_H1_v_np = positions[H1_gidx] - positions[O_gidx]
         d_O_H2_v_np = positions[H2_gidx] - positions[O_gidx]
@@ -691,13 +685,10 @@ def _process_single_frame_numba_jit(
             if d_H1H2_m_np >= epsilon_const_np:
                 u_H1H2_h_np = d_H1H2_v_np / d_H1H2_m_np
                 v_bend_scalar_np = np.dot(v_H1_perp_np - v_H2_perp_np, u_H1H2_h_np)
-                mu_HH_np = (m_H1_val * m_H2_val) / (
-                    m_H1_val + m_H2_val
-                )  # More general reduced mass
-                # Original script was: mu_HH_np = masses[H1_gidx] / 2.0, assumes m_H1=m_H2
+                mu_HH_np = (m_H1_val * m_H2_val) / (m_H1_val + m_H2_val)
                 T_bend_val = (mu_HH_np * v_bend_scalar_np**2) / kb_const_np
 
-                # Modified: Split between excited and normal bend
+                # Split between excited and normal bend
                 if is_H_excited_mask[H1_gidx] or is_H_excited_mask[H2_gidx]:
                     sum_T_bend_exc += T_bend_val
                     count_T_bend_exc += 1
@@ -705,9 +696,7 @@ def _process_single_frame_numba_jit(
                     sum_T_bend_norm += T_bend_val
                     count_T_bend_norm += 1
 
-        # --- Bend Calculation (New - Eq. 5 from paper) ---
-        # Needs: d_OH1_paper_vec, d_OH1_mag_np, d_OH2_paper_vec, d_OH2_mag_np (calculated above for stretch part)
-        # u_OH1_paper_hat, u_OH2_paper_hat
+        # --- Bend Calculation (angle) ---
         if (
             d_OH1_mag_np >= epsilon_const_np
             and d_OH2_mag_np >= epsilon_const_np
@@ -759,7 +748,7 @@ def _process_single_frame_numba_jit(
             c_h = np.cos(theta_half)
             s_h = np.sin(theta_half)
 
-            term_mH_over_M = m_H1_val / M_total_mol  # Approximation if mH1~mH2
+            term_mH_over_M = m_H1_val / M_total_mol
             term_mO_over_M = m_O_val / M_total_mol
 
             # Velocities (Eq. 4 derivatives)
@@ -790,7 +779,7 @@ def _process_single_frame_numba_jit(
             )
             T_bend_eq5_val = K_bend_eq5 / (3 / 2 * kb_const_np)
 
-            # Modified: Split between excited and normal bend
+            # Split between excited and normal bend
             if is_H_excited_mask[H1_gidx] or is_H_excited_mask[H2_gidx]:
                 sum_T_bend_eq5_exc += T_bend_eq5_val
                 count_T_bend_eq5_exc += 1
@@ -798,7 +787,7 @@ def _process_single_frame_numba_jit(
                 sum_T_bend_eq5_norm += T_bend_eq5_val
                 count_T_bend_eq5_norm += 1
 
-        # --- Librations (unchanged) ---
+        # --- Librations ---
         mol_indices_for_lib = mol_atom_idxs
         masses_mol = np.array(
             [
@@ -872,7 +861,7 @@ def _process_single_frame_numba_jit(
             L2_val = np.dot(L_lab_val, axis2_v_np)
             L3_val = np.dot(L_lab_val, axis3_w_np)
 
-            # Modified: Split all libration modes between excited and normal
+            # Split all libration modes between excited and normal
             # Check if any H in the molecule is excited
             mol_is_excited = is_H_excited_mask[H1_gidx] or is_H_excited_mask[H2_gidx]
 
@@ -903,7 +892,7 @@ def _process_single_frame_numba_jit(
                     sum_T_wag_norm += T_wag_val
                     count_T_wag_norm += 1
 
-    # --- Hydrogen Bond (unchanged) ---
+    # --- Hydrogen Bond ---
     num_oxygens = len(oxygen_indices_for_hb_np)
     if num_oxygens >= 2:
         for i_idx_o_list in range(num_oxygens):
@@ -955,7 +944,6 @@ def _process_single_frame_numba_jit(
     )
     avg_T_hb = sum_T_hb / count_T_hb if count_T_hb > 0 else np.nan
 
-    # Modified: Calculate separate averages for excited and normal librations
     avg_T_twist_norm = (
         sum_T_twist_norm / count_T_twist_norm if count_T_twist_norm > 0 else np.nan
     )
@@ -998,8 +986,6 @@ def analyze_temps_numba(
     hb_cutoff: float = DEFAULT_HB_OO_DIST_CUTOFF,
     epsilon_val: float = DEFAULT_EPSILON,
     trig_epsilon_np: float = TRIG_EPSILON,
-    # Aggiungi un flag per abilitare la parallelizzazione Numba sui frame
-    parallel_numba_frames: bool = True,
 ) -> Dict[str, List[float]]:
     """
     Versione Numba-accelerated di analyze_molecular_temperatures.
@@ -1104,7 +1090,6 @@ def analyze_temps_numba(
                 positions_np,
                 velocities_np,
                 masses_np,
-                # atom_numeric_types_np, # Non passato direttamente se mol_indices lo gestisce
                 molecule_indices_typed_list,
                 is_H_excited_flat_mask_np,
                 oxygen_indices_for_hb_np_arg,  # Passa gli indici degli ossigeni

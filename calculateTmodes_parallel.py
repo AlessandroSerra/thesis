@@ -559,6 +559,12 @@ def _process_single_frame_numba_jit(
     avg_T_rock_norm = (
         sum_T_rock_norm / count_T_rock_norm if count_T_rock_norm > 0 else np.nan
     )
+    avg_T_bend_I_exc = (
+        sum_T_bend_I_exc / count_T_bend_I_exc if count_T_bend_I_exc > 0 else np.nan
+    )
+    avg_T_bend_I_norm = (
+        sum_T_bend_I_norm / count_T_bend_I_norm if count_T_bend_I_norm > 0 else np.nan
+    )
 
     return (
         avg_T_stretch_exc,
@@ -567,6 +573,8 @@ def _process_single_frame_numba_jit(
         avg_T_bend_norm,
         avg_T_bend_eq5_exc,
         avg_T_bend_eq5_norm,
+        avg_T_bend_I_exc,
+        avg_T_bend_I_norm,
         avg_T_hb,
         avg_T_twist_exc,
         avg_T_twist_norm,
@@ -698,7 +706,7 @@ def analyze_temps_numba_parallel(
 
     num_frames = len(trajs_data)
     results_array = np.full(
-        (num_frames, 13), np.nan, dtype=np.float64
+        (num_frames, 15), np.nan, dtype=np.float64
     )  # 13 temperature modes
 
     tasks_args = []
@@ -750,12 +758,14 @@ def analyze_temps_numba_parallel(
     frame_avg_T_bend_eq5_exc_list = list(results_array[:, 4])
     frame_avg_T_bend_eq5_norm_list = list(results_array[:, 5])
     frame_avg_T_hb_list = list(results_array[:, 6])
-    frame_avg_T_twist_exc_list = list(results_array[:, 7])
-    frame_avg_T_twist_norm_list = list(results_array[:, 8])
-    frame_avg_T_wag_exc_list = list(results_array[:, 9])
-    frame_avg_T_wag_norm_list = list(results_array[:, 10])
-    frame_avg_T_rock_exc_list = list(results_array[:, 11])
-    frame_avg_T_rock_norm_list = list(results_array[:, 12])
+    frame_avg_T_bend_I_exc_list = list(results_array[:, 7])
+    frame_avg_T_bend_I_norm_list = list(results_array[:, 8])
+    frame_avg_T_twist_exc_list = list(results_array[:, 9])
+    frame_avg_T_twist_norm_list = list(results_array[:, 10])
+    frame_avg_T_wag_exc_list = list(results_array[:, 11])
+    frame_avg_T_wag_norm_list = list(results_array[:, 12])
+    frame_avg_T_rock_exc_list = list(results_array[:, 13])
+    frame_avg_T_rock_norm_list = list(results_array[:, 14])
 
     # def robust_nanmean(lst: List[float]) -> float:
     #     valid_values = [x for x in lst if not np.isnan(x)]
@@ -823,6 +833,8 @@ def analyze_temps_numba_parallel(
         "bend_HOH_norm": frame_avg_T_bend_norm_list,
         "bend_HOH_eq5_exc": frame_avg_T_bend_eq5_exc_list,
         "bend_HOH_eq5_norm": frame_avg_T_bend_eq5_norm_list,
+        "bend_HOH_I_exc": frame_avg_T_bend_I_exc_list,
+        "bend_HOH_I_norm": frame_avg_T_bend_I_norm_list,
         "hb": frame_avg_T_hb_list,
         "libr_twist_exc": frame_avg_T_twist_exc_list,
         "libr_twist_norm": frame_avg_T_twist_norm_list,

@@ -767,65 +767,6 @@ def analyze_temps_numba_parallel(
     frame_avg_T_rock_exc_list = list(results_array[:, 13])
     frame_avg_T_rock_norm_list = list(results_array[:, 14])
 
-    # def robust_nanmean(lst: List[float]) -> float:
-    #     valid_values = [x for x in lst if not np.isnan(x)]
-    #     return float(np.mean(valid_values)) if valid_values else np.nan
-
-    #     print_overall_avg_T_stretch_exc = robust_nanmean(frame_avg_T_stretch_exc_list)
-    #     print_overall_avg_T_stretch_norm = robust_nanmean(frame_avg_T_stretch_norm_list)
-    #     print_overall_avg_T_bend_exc = robust_nanmean(frame_avg_T_bend_exc_list)
-    #     print_overall_avg_T_bend_norm = robust_nanmean(frame_avg_T_bend_norm_list)
-    #     print_overall_avg_T_bend_eq5_exc = robust_nanmean(frame_avg_T_bend_eq5_exc_list)
-    #     print_overall_avg_T_bend_eq5_norm = robust_nanmean(
-    #         frame_avg_T_bend_eq5_norm_list
-    #     )
-    #     print_overall_avg_T_hb = robust_nanmean(frame_avg_T_hb_list)
-    #     print_overall_avg_T_twist_exc = robust_nanmean(frame_avg_T_twist_exc_list)
-    #     print_overall_avg_T_twist_norm = robust_nanmean(frame_avg_T_twist_norm_list)
-    #     print_overall_avg_T_wag_exc = robust_nanmean(frame_avg_T_wag_exc_list)
-    #     print_overall_avg_T_wag_norm = robust_nanmean(frame_avg_T_wag_norm_list)
-    #     print_overall_avg_T_rock_exc = robust_nanmean(frame_avg_T_rock_exc_list)
-    #     print_overall_avg_T_rock_norm = robust_nanmean(frame_avg_T_rock_norm_list)
-
-    #     print(
-    #         f"Overall Avg T_stretch_exc (Numba Parallel): {print_overall_avg_T_stretch_exc:.2f} K"
-    #     )
-    #     print(
-    #         f"Overall Avg T_stretch_norm (Numba Parallel): {print_overall_avg_T_stretch_norm:.2f} K"
-    #     )
-    #    ... (print other averages similarly)
-    #     print(
-    #         f"Overall Avg T_bend_exc (Numba Parallel): {print_overall_avg_T_bend_exc:.2f} K"
-    #     )
-    #     print(
-    #         f"Overall Avg T_bend_norm (Numba Parallel): {print_overall_avg_T_bend_norm:.2f} K"
-    #     )
-    #     print(
-    #         f"Overall Avg T_bend_eq5_exc (Numba Parallel): {print_overall_avg_T_bend_eq5_exc:.2f} K"
-    #     )
-    #     print(
-    #         f"Overall Avg T_bend_eq5_norm (Numba Parallel): {print_overall_avg_T_bend_eq5_norm:.2f} K"
-    #     )
-    #     print(f"Overall Avg T_hb (Numba Parallel): {print_overall_avg_T_hb:.2f} K")
-    #     print(
-    #         f"Overall Avg T_twist_exc (Numba Parallel): {print_overall_avg_T_twist_exc:.2f} K"
-    #     )
-    #     print(
-    #         f"Overall Avg T_twist_norm (Numba Parallel): {print_overall_avg_T_twist_norm:.2f} K"
-    #     )
-    #     print(
-    #         f"Overall Avg T_wag_exc (Numba Parallel): {print_overall_avg_T_wag_exc:.2f} K"
-    #     )
-    #     print(
-    #         f"Overall Avg T_wag_norm (Numba Parallel): {print_overall_avg_T_wag_norm:.2f} K"
-    #     )
-    #     print(
-    #         f"Overall Avg T_rock_exc (Numba Parallel): {print_overall_avg_T_rock_exc:.2f} K"
-    #     )
-    #     print(
-    #         f"Overall Avg T_rock_norm (Numba Parallel): {print_overall_avg_T_rock_norm:.2f} K"
-    #     )
-
     returned_data = {
         "stretch_excited_H": frame_avg_T_stretch_exc_list,
         "stretch_normal_H": frame_avg_T_stretch_norm_list,

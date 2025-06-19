@@ -3,6 +3,8 @@ import re
 from typing import Dict, Optional, Tuple
 
 import numpy as np
+from freud.box import Box
+from freud.density import RDF
 from numba import jit, njit, prange  # noqa: F401
 
 # ----------------------------------------------------------------------------
@@ -260,6 +262,70 @@ def calculateVACFlmp(
             vacf[lag] = np.mean(dot)
 
     if norm:
+        vacf /= vacf[0]
+
+    return vacf
+
+
+def calculateVACFlmp_groups(
+    velocities: np.ndarray,
+    atom_types: Optional[np.ndarray] = None,
+    max_correlation_len: Optional[int] = None,
+    mass_weighted: bool = False,
+    norm: bool = True,
+    group: str = "all",
+    index_file: str = "model-indexes.dat",
+) -> np.ndarray:
+    """
+    VACF in stile LAMMPS, con selezione del gruppo di atomi.
+
+    group:
+      - "all": tutti gli atomi (default)
+      - "exc" : solo atomi eccitati (da index_file, 1-based)
+      - "norm": tutti gli altri atomi
+    """
+    # 1) carico indici eccitati se necessario (convertendo da 1-based a 0-based)
+    n_frames, n_atoms, _ = velocities.shape
+    if group in ("exc", "norm"):
+        exc_idxs = np.loadtxt(index_file, dtype=int) - 1
+        all_idxs = np.arange(n_atoms, dtype=int)
+        if group == "exc":
+            sel = exc_idxs
+        else:  # norm
+            sel = np.setdiff1d(all_idxs, exc_idxs)
+        velocities = velocities[:, sel, :]
+        if atom_types is not None:
+            atom_types = atom_types[sel]
+        n_atoms = velocities.shape[1]
+
+    # 2) preparo velocità e masse
+    velocities, masses = _prepare_vel_mass(velocities, atom_types)
+
+    # 3) parametri per il VACF
+    corr_len = max_correlation_len or (n_frames - 1)
+    v0 = velocities[0]
+    vacf = np.zeros(corr_len, dtype=np.float64)
+    lbl = "mass-weighted " if mass_weighted else ""
+    print(
+        f"Calculating {lbl}VACF for group='{group}', n_atoms={n_atoms}, steps={corr_len}."
+    )
+
+    # 4) calcolo VACF
+    if mass_weighted:
+        m0 = masses[0]
+        m_sum = np.sum(m0)
+        for lag in range(corr_len):
+            vt = velocities[lag]
+            dot = np.sum(v0 * vt, axis=1)
+            vacf[lag] = np.sum(m0 * dot) / m_sum
+    else:
+        for lag in range(corr_len):
+            vt = velocities[lag]
+            dot = np.sum(v0 * vt, axis=1)
+            vacf[lag] = np.mean(dot)
+
+    # 5) normalizzazione
+    if norm and vacf[0] != 0:
         vacf /= vacf[0]
 
     return vacf
@@ -645,7 +711,7 @@ def _rdf_core_loop_per_frame(
 ) -> None:
     """
     Core loop per RDF, calcolando un istogramma per ogni frame.
-    Modifica `hist_all_frames` in-place.
+    Questa versione è CORRETTA per tutti i tipi di coppie.
     """
     n_frames, n_atoms, _ = positions.shape
     n_bins = hist_all_frames.shape[1]
@@ -653,25 +719,30 @@ def _rdf_core_loop_per_frame(
 
     # Loop su tutti i frame
     for i in range(n_frames):
-        # Loop su tutte le coppie di atomi
+        # Loop su ogni coppia unica di atomi (j, k) con k > j
         for j in range(n_atoms):
-            if atom_types[j] != type1:
-                continue
-
+            type_j = atom_types[j]
             for k in range(j + 1, n_atoms):
-                if atom_types[k] != type2:
-                    continue
+                type_k = atom_types[k]
 
-                d_vec = positions[i, j] - positions[i, k]
-                d_vec -= box_dims * np.rint(d_vec / box_dims)
-                dist_sq = d_vec[0] ** 2 + d_vec[1] ** 2 + d_vec[2] ** 2
+                # Controlla se la coppia (j, k) corrisponde alla coppia desiderata (type1, type2)
+                # in entrambi gli ordini.
+                is_matching_pair = (type_j == type1 and type_k == type2) or (
+                    type_j == type2 and type_k == type1
+                )
 
-                if dist_sq < r_max_sq:
-                    dist = np.sqrt(dist_sq)
-                    bin_idx = int(dist / dr)
-                    if bin_idx < n_bins:
-                        # LA MODIFICA CHIAVE: indicizza l'istogramma con il frame corrente `i`
-                        hist_all_frames[i, bin_idx] += 2
+                if is_matching_pair:
+                    # Calcola la distanza usando la Minimum Image Convention
+                    d_vec = positions[i, j] - positions[i, k]
+                    d_vec -= box_dims * np.rint(d_vec / box_dims)
+                    dist_sq = d_vec[0] ** 2 + d_vec[1] ** 2 + d_vec[2] ** 2
+
+                    if dist_sq < r_max_sq:
+                        dist = np.sqrt(dist_sq)
+                        bin_idx = int(dist / dr)
+                        if bin_idx < n_bins:
+                            # Ogni coppia unica trovata viene contata una volta.
+                            hist_all_frames[i, bin_idx] += 1
 
 
 def calculateRDF(
@@ -684,27 +755,14 @@ def calculateRDF(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Calcola la Radial Distribution Function (RDF), g(r), per ogni singolo frame.
-
-    Ritorna un array di curve g(r), una per ogni frame fornito.
-
-    Parametri
-    ----------
-    // (Parametri identici alla funzione precedente)
-
-    Ritorna
-    -------
-    Tuple[np.ndarray, np.ndarray]
-        Una tupla contenente:
-        - r: i centri dei bin di distanza (asse x), forma (n_bins,).
-        - g_r_all_frames: i valori delle RDF per ogni frame,
-                          forma (n_frames, n_bins).
+    Questa funzione wrapper è CORRETTA e non necessita di modifiche.
     """
     print(f"Avvio calcolo RDF per la coppia {pair} (frame per frame)...")
 
-    # --- 1. Preparazione (identica a prima) ---
+    # --- 1. Preparazione ---
     box_dims = np.diagonal(cell_vectors)
     volume = np.prod(box_dims)
-    type_map = {"O": 1, "H": 2}
+    type_map = {"O": 1, "H": 2}  # Convenzione O=1, H=2
     type1 = type_map[pair[0].upper()]
     type2 = type_map[pair[1].upper()]
 
@@ -717,30 +775,34 @@ def calculateRDF(
 
     # --- 2. Esecuzione del loop Numba ---
     n_bins = int(r_max / dr)
-    # Crea un array di istogrammi 2D, uno per ogni frame
     hist_all_frames = np.zeros((n_frames, n_bins), dtype=np.int64)
 
     _rdf_core_loop_per_frame(
         positions, atom_types, box_dims, r_max, dr, type1, type2, hist_all_frames
     )
 
-    # --- 3. Normalizzazione (applicata a tutti i frame simultaneamente) ---
+    # --- 3. Normalizzazione ---
     r = (np.arange(n_bins) + 0.5) * dr
     shell_volumes = 4.0 * np.pi * r**2 * dr
 
     if type1 == type2:
+        # Per coppie dello stesso tipo (es. O-O), il fattore di normalizzazione è N(N-1)/2
+        if n1_atoms < 2:
+            return r, np.zeros_like(shell_volumes)
         n_pairs = n1_atoms * (n1_atoms - 1) / 2.0
     else:
+        # Per coppie di tipo diverso (es. O-H), il fattore è N_O * N_H
         n_pairs = n1_atoms * n2_atoms
 
     pair_density = n_pairs / volume
 
-    # Fattore di normalizzazione PER SINGOLO FRAME (non c'è più `n_frames`)
+    # Conteggio ideale in un gas per un singolo frame
     ideal_gas_counts = pair_density * shell_volumes
 
     # Normalizza ogni riga (frame) dell'istogramma 2D
     g_r_all_frames = np.zeros_like(hist_all_frames, dtype=np.float64)
-    non_zero = ideal_gas_counts > 0
+    # Evita la divisione per zero per i bin con volume nullo (es. r=0)
+    non_zero = ideal_gas_counts > 1e-9
 
     # NumPy broadcasting: divide ogni riga di hist_all_frames per l'array 1D ideal_gas_counts
     g_r_all_frames[:, non_zero] = (
@@ -749,6 +811,110 @@ def calculateRDF(
 
     print("Calcolo RDF per frame completato.")
     return r, g_r_all_frames
+
+
+def calculateRDFfreud(
+    positions: np.ndarray,
+    atom_types: np.ndarray,
+    cell_vectors: np.ndarray,
+    pair: Tuple[str, str],
+    r_max: float = 5.0,
+    dr: float = 0.01,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Calcola la Radial Distribution Function (RDF), g(r), per ogni frame di una
+    traiettoria utilizzando la libreria freud.
+
+    Parametri
+    ----------
+    positions : np.ndarray
+        Array delle coordinate con forma (n_frames, n_atoms, 3).
+        Le coordinate devono essere "wrapped" (all'interno del box).
+    atom_types : np.ndarray
+        Array dei tipi atomici (1=O, 2=H) con forma (n_atoms,).
+    cell_vectors : np.ndarray
+        Matrice (3, 3) dei vettori di cella, costante per tutta la traiettoria.
+    pair : Tuple[str, str]
+        La coppia di atomi per cui calcolare la RDF (es. ('O', 'O'), ('O', 'H')).
+        L'ordine non conta.
+    bins : int, default 500
+        Il numero di bin per l'istogramma della RDF.
+    r_max : float, default 5.0
+        La massima distanza (r) da considerare per il calcolo.
+
+    Ritorna
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        Una tupla contenente:
+        - r: i centri dei bin di distanza (asse x), forma (bins,).
+        - rdf_per_frame: i valori della g(r) per ogni frame,
+                         forma (n_frames, bins).
+    """
+    print(f"Avvio calcolo RDF con freud per la coppia {pair}...")
+
+    # --- 1. Preparazione (eseguita una sola volta) ---
+    n_frames, n_atoms, _ = positions.shape
+    bins = int(r_max / dr)
+
+    # Crea l'oggetto Box di freud dalla matrice di cella
+    box = Box.from_matrix(cell_vectors)
+
+    # Mappa i nomi degli atomi agli indici numerici (1=O, 2=H)
+    type_map = {"O": 1, "H": 2}
+    try:
+        type1_str, type2_str = pair
+        type1 = type_map[type1_str.upper()]
+        type2 = type_map[type2_str.upper()]
+    except KeyError:
+        raise ValueError(
+            f"Tipo di atomo non valido nella coppia {pair}. Usare 'O' o 'H'."
+        )
+
+    # Trova gli indici degli atomi che ci interessano
+    indices1 = np.where(atom_types == type1)[0]
+    indices2 = np.where(atom_types == type2)[0]
+
+    if len(indices1) == 0 or len(indices2) == 0:
+        print(
+            f"Attenzione: nessun atomo trovato per la coppia {pair}. Restituisco array vuoti."
+        )
+        return np.array([]), np.array([])
+
+    # --- 1.5. Preallocazione array RDF ---
+    rdf_per_frame = np.empty((n_frames, bins), dtype=np.float32)
+
+    # Crea l'oggetto per il calcolo della RDF
+    rdf_computer = RDF(bins=bins, r_max=r_max)
+
+    # --- 2. Loop sui frame ---
+    # `freud` è così veloce che spesso un loop Python è sufficiente.
+    for i in range(n_frames):
+        # Estrai le posizioni per il frame corrente
+        current_pos = positions[i]
+
+        # Seleziona le posizioni degli atomi di interesse per questo frame
+        points1 = current_pos[indices1]
+
+        if type1 == type2:
+            # Calcolo per coppie dello stesso tipo (es. O-O)
+            # `system` contiene i punti di riferimento
+            rdf_computer.compute(system=(box, points1), reset=True)
+        else:
+            # Calcolo per coppie di tipo diverso (es. O-H)
+            # `system` ha i punti di riferimento (O), `query_points` i punti da cercare (H)
+            points2 = current_pos[indices2]
+            rdf_computer.compute(
+                system=(box, points1), query_points=points2, reset=True
+            )
+
+        # Aggiungi la g(r) calcolata per questo frame alla lista
+        rdf_per_frame[i] = rdf_computer.rdf
+
+    # L'asse r è lo stesso per tutti i calcoli
+    r_bins = rdf_computer.bin_centers
+
+    print("Calcolo RDF con freud completato.")
+    return r_bins, rdf_per_frame
 
 
 # ==================================================================

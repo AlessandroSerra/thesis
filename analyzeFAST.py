@@ -221,6 +221,69 @@ def calculateVACFnp(
     return C_t
 
 
+def calculateVACFnp_groups(
+    velocities: np.ndarray,
+    atom_types: Optional[np.ndarray] = None,
+    max_correlation_len: Optional[int] = None,
+    mass_weighted: bool = False,
+    group: str = "all",
+    index_file: str = "model-indexes.dat",
+) -> np.ndarray:
+    """VACF in stile *NP* con selezione del gruppo di atomi.
+
+    Accetta sia per‑atomo che singolo vettore per frame.
+
+    group:
+      - "all": tutti gli atomi (default)
+      - "exc" : solo atomi eccitati (da index_file, 1-based)
+      - "norm": tutti gli altri atomi
+    """
+    # 1) carico indici eccitati se necessario (convertendo da 1-based a 0-based)
+    n_frames, n_atoms, _ = velocities.shape
+    if group in ("exc", "norm"):
+        exc_idxs = np.loadtxt(index_file, dtype=int) - 1
+        all_idxs = np.arange(n_atoms, dtype=int)
+        if group == "exc":
+            sel = exc_idxs
+        else:  # norm
+            sel = np.setdiff1d(all_idxs, exc_idxs)
+        velocities = velocities[:, sel, :]
+        if atom_types is not None:
+            atom_types = atom_types[sel]
+        n_atoms = velocities.shape[1]
+
+    velocities, masses = _prepare_vel_mass(velocities, atom_types)
+
+    n_frames, n_atoms, _ = velocities.shape
+    corr_len = max_correlation_len or (n_frames - 1)
+    if corr_len > n_frames:
+        raise ValueError("max_correlation_len > n_frames")
+
+    vel_tr = np.transpose(velocities, (1, 2, 0))  # (n_atoms,3,n_frames)
+
+    C_t = np.zeros(corr_len, dtype=np.float64)
+    N_split = 0
+
+    lbl = "mass-weighted " if mass_weighted else ""
+    print(
+        f"Calculating {lbl}VACF (NP) for group='{group}', n_atoms={n_atoms}, steps={corr_len}."
+    )
+
+    for t in range(corr_len, n_frames + 1, corr_len):
+        blk = slice(t - corr_len, t)
+        for j in range(n_atoms):
+            for k in range(3):
+                v_series = vel_tr[j, k, blk]
+                c_jk = _calculate_autocorr(v_series, corr_len)
+                mass = masses[blk, j] if mass_weighted else 1.0
+                C_t += c_jk * mass
+        N_split += 1
+
+    C_t /= N_split
+    C_t /= C_t[0]
+    return C_t
+
+
 # ---------------------------------------------------------------------------
 # VACF — variante "LMP" (LAMMPS‑like)
 # ---------------------------------------------------------------------------

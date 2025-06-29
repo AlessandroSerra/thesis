@@ -32,7 +32,7 @@ def readGPUMDdump(
 
     pos_frames = []  # list[np.ndarray]
     vel_frames = []
-    cell_vecs = np.empty((3, 3), dtype=np.float64)  # inizializza vuoto
+    cell_vecs = np.empty((3, 3), dtype=np.float32)  # inizializza vuoto
     atom_types = None  # np.ndarray una volta sola
     lattice_re = re.compile(r'Lattice="([0-9.eE+\- ]+)"')
 
@@ -70,8 +70,8 @@ def readGPUMDdump(
             data_str = "".join(line.split(" ", 1)[1] for line in lines)
             nums = np.fromstring(data_str, sep=" ").reshape(n_atoms, -1)
 
-            pos_frames.append(nums[:, 0:3].astype(np.float64, copy=False))
-            vel_frames.append(nums[:, 4:7].astype(np.float64, copy=False))
+            pos_frames.append(nums[:, 0:3].astype(np.float32, copy=False))
+            vel_frames.append(nums[:, 4:7].astype(np.float32, copy=False))
             frame += 1
 
     # Empila in array 3‑D
@@ -147,7 +147,7 @@ def writeGPUMDdump(
 # Costanti utili (possono essere definite globalmente o passate/definite localmente)
 TWO_PI = 2.0 * np.pi
 _ATOMIC_MASSES = np.array(
-    [0.0, 15.999, 1.008], dtype=np.float64
+    [0.0, 15.999, 1.008], dtype=np.float32
 )  # Fattore per convertire frequenza (in ps^-1 o THz) in wavenumbers (cm^-1)
 # 1 / (c_luce_cm_per_s * 1e-12 s/ps) = 1 / (2.99792458e10 * 1e-12)
 HZ_TO_CMINV_FACTOR = 33.3564095198152
@@ -200,7 +200,7 @@ def calculateVACFnp(
 
     vel_tr = np.transpose(velocities, (1, 2, 0))  # (n_atoms,3,n_frames)
 
-    C_t = np.zeros(corr_len, dtype=np.float64)
+    C_t = np.zeros(corr_len, dtype=np.float32)
     N_split = 0
 
     lbl = "mass-weighted " if mass_weighted else ""
@@ -261,7 +261,7 @@ def calculateVACFnp_groups(
 
     vel_tr = np.transpose(velocities, (1, 2, 0))  # (n_atoms,3,n_frames)
 
-    C_t = np.zeros(corr_len, dtype=np.float64)
+    C_t = np.zeros(corr_len, dtype=np.float32)
     N_split = 0
 
     lbl = "mass-weighted " if mass_weighted else ""
@@ -306,7 +306,7 @@ def calculateVACFlmp(
     corr_len = max_correlation_len or (n_frames - 1)
 
     v0 = velocities[0]
-    vacf = np.zeros(corr_len, dtype=np.float64)
+    vacf = np.zeros(corr_len, dtype=np.float32)
 
     lbl = "mass-weighted " if mass_weighted else ""
     print(f"Calculating {lbl}VACF (LMP) for n_atoms={n_atoms}, steps={corr_len}.")
@@ -367,7 +367,7 @@ def calculateVACFlmp_groups(
     # 3) parametri per il VACF
     corr_len = max_correlation_len or (n_frames - 1)
     v0 = velocities[0]
-    vacf = np.zeros(corr_len, dtype=np.float64)
+    vacf = np.zeros(corr_len, dtype=np.float32)
     lbl = "mass-weighted " if mass_weighted else ""
     print(
         f"Calculating {lbl}VACF for group='{group}', n_atoms={n_atoms}, steps={corr_len}."
@@ -863,7 +863,7 @@ def calculateRDF(
     ideal_gas_counts = pair_density * shell_volumes
 
     # Normalizza ogni riga (frame) dell'istogramma 2D
-    g_r_all_frames = np.zeros_like(hist_all_frames, dtype=np.float64)
+    g_r_all_frames = np.zeros_like(hist_all_frames, dtype=np.float32)
     # Evita la divisione per zero per i bin con volume nullo (es. r=0)
     non_zero = ideal_gas_counts > 1e-9
 
@@ -1166,17 +1166,17 @@ def _process_single_frame_numba_jit(
 
                 # Librations
                 # ========= INIZIO BLOCCO CORRETTO =========
-                masses_mol = np.empty(3, dtype=np.float64)
+                masses_mol = np.empty(3, dtype=np.float32)
                 masses_mol[0] = m_O
                 masses_mol[1] = m_H1
                 masses_mol[2] = m_H2
 
-                positions_mol = np.empty((3, 3), dtype=np.float64)
+                positions_mol = np.empty((3, 3), dtype=np.float32)
                 positions_mol[0, :] = positions[O_gidx]
                 positions_mol[1, :] = positions[H1_gidx]
                 positions_mol[2, :] = positions[H2_gidx]
 
-                velocities_mol = np.empty((3, 3), dtype=np.float64)
+                velocities_mol = np.empty((3, 3), dtype=np.float32)
                 velocities_mol[0, :] = velocities[O_gidx]
                 velocities_mol[1, :] = velocities[H1_gidx]
                 velocities_mol[2, :] = velocities[H2_gidx]
@@ -1221,7 +1221,7 @@ def _process_single_frame_numba_jit(
                     I_22 += m_i * (r_p_dot_u**2 + r_p_dot_w**2)
                     I_33 += m_i * (r_p_dot_u**2 + r_p_dot_v**2)
 
-                L_lab = np.zeros(3, dtype=np.float64)
+                L_lab = np.zeros(3, dtype=np.float32)
                 for i_atom in range(3):
                     L_lab += masses_mol[i_atom] * np.cross(
                         r_prime_lib_val[i_atom], v_rel_cm_lib_val[i_atom]
@@ -1337,10 +1337,10 @@ def _parallel_worker_from_arrays(args_tuple: Tuple) -> Tuple[int, np.ndarray]:
             epsilon_const,
             trig_epsilon_const,
         )
-        return frame_idx, np.array(temps_tuple, dtype=np.float64)
+        return frame_idx, np.array(temps_tuple, dtype=np.float32)
     except Exception as e:
         print(f"Errore nel worker per il frame {args_tuple[0]}: {e}")
-        return args_tuple[0], np.full(15, np.nan, dtype=np.float64)
+        return args_tuple[0], np.full(15, np.nan, dtype=np.float32)
 
 
 # ==================================================================
@@ -1374,7 +1374,7 @@ def analyzeTEMPS(
     n_mols = n_atoms // 3
     molecule_indices = np.arange(n_atoms, dtype=np.int32).reshape(n_mols, 3)
 
-    mass_map = np.array([0.0, 15.999, 1.008], dtype=np.float64)
+    mass_map = np.array([0.0, 15.999, 1.008], dtype=np.float32)
     try:
         masses = mass_map[atom_types]
     except IndexError:
@@ -1417,7 +1417,7 @@ def analyzeTEMPS(
         )
 
     # --- Esecuzione Parallela ---
-    results_array = np.full((n_frames, 15), np.nan, dtype=np.float64)
+    results_array = np.full((n_frames, 15), np.nan, dtype=np.float32)
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
         try:

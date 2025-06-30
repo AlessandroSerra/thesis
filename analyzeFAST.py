@@ -1023,6 +1023,7 @@ def _process_single_frame_numba_jit(
     # Inizializza somme e contatori
     sum_T_stretch_exc, count_T_stretch_exc = 0.0, 0
     sum_T_stretch_norm, count_T_stretch_norm = 0.0, 0
+    sum_T_stretch_nonexc_in_exc_mol, count_T_stretch_nonexc_in_exc_mol = 0.0, 0
     sum_T_bend_exc, count_T_bend_exc = 0.0, 0
     sum_T_bend_norm, count_T_bend_norm = 0.0, 0
     sum_T_bend_eq5_norm, count_T_bend_eq5_norm = 0.0, 0
@@ -1044,7 +1045,10 @@ def _process_single_frame_numba_jit(
         m_O, m_H1, m_H2 = masses[O_gidx], masses[H1_gidx], masses[H2_gidx]
         M_total = m_O + m_H1 + m_H2
 
-        # Stretch
+        # Check if molecule has any excited hydrogens
+        mol_has_excited_H = is_H_excited_mask[H1_gidx] or is_H_excited_mask[H2_gidx]
+
+        # Stretch for O-H1
         mu_OH1 = (m_O * m_H1) / (m_O + m_H1)
         d_OH1_vec = positions[O_gidx] - positions[H1_gidx]
         d_OH1_mag = np.linalg.norm(d_OH1_vec)
@@ -1053,13 +1057,21 @@ def _process_single_frame_numba_jit(
             v_rel1 = velocities[O_gidx] - velocities[H1_gidx]
             v_s1 = np.dot(v_rel1, u_OH1)
             T1 = (mu_OH1 * v_s1**2) / kb_const
+
             if is_H_excited_mask[H1_gidx]:
+                # This is an excited bond
                 sum_T_stretch_exc += T1
                 count_T_stretch_exc += 1
+            elif mol_has_excited_H:
+                # This is a non-excited bond in an excited molecule
+                sum_T_stretch_nonexc_in_exc_mol += T1
+                count_T_stretch_nonexc_in_exc_mol += 1
             else:
+                # This is a bond in a completely normal molecule
                 sum_T_stretch_norm += T1
                 count_T_stretch_norm += 1
 
+        # Stretch for O-H2
         mu_OH2 = (m_O * m_H2) / (m_O + m_H2)
         d_OH2_vec = positions[O_gidx] - positions[H2_gidx]
         d_OH2_mag = np.linalg.norm(d_OH2_vec)
@@ -1068,10 +1080,17 @@ def _process_single_frame_numba_jit(
             v_rel2 = velocities[O_gidx] - velocities[H2_gidx]
             v_s2 = np.dot(v_rel2, u_OH2)
             T2 = (mu_OH2 * v_s2**2) / kb_const
+
             if is_H_excited_mask[H2_gidx]:
+                # This is an excited bond
                 sum_T_stretch_exc += T2
                 count_T_stretch_exc += 1
+            elif mol_has_excited_H:
+                # This is a non-excited bond in an excited molecule
+                sum_T_stretch_nonexc_in_exc_mol += T2
+                count_T_stretch_nonexc_in_exc_mol += 1
             else:
+                # This is a bond in a completely normal molecule
                 sum_T_stretch_norm += T2
                 count_T_stretch_norm += 1
 
@@ -1244,6 +1263,7 @@ def _process_single_frame_numba_jit(
                     else:
                         sum_T_twist_norm += T_twist
                         count_T_twist_norm += 1
+
                 if I_22 > epsilon_const:
                     T_rock = L2**2 / (I_22 * kb_const)
                     if mol_is_excited:
@@ -1281,6 +1301,9 @@ def _process_single_frame_numba_jit(
         sum_T_stretch_norm / count_T_stretch_norm
         if count_T_stretch_norm > 0
         else np.nan,
+        sum_T_stretch_nonexc_in_exc_mol / count_T_stretch_nonexc_in_exc_mol
+        if count_T_stretch_nonexc_in_exc_mol > 0
+        else np.nan,
         sum_T_bend_exc / count_T_bend_exc if count_T_bend_exc > 0 else np.nan,
         sum_T_bend_norm / count_T_bend_norm if count_T_bend_norm > 0 else np.nan,
         sum_T_bend_eq5_exc / count_T_bend_eq5_exc
@@ -1299,11 +1322,6 @@ def _process_single_frame_numba_jit(
         sum_T_rock_exc / count_T_rock_exc if count_T_rock_exc > 0 else np.nan,
         sum_T_rock_norm / count_T_rock_norm if count_T_rock_norm > 0 else np.nan,
     )
-
-
-# ==================================================================
-# ------------ FUNZIONE WORKER PER PARALLELISMO --------------------
-# ==================================================================
 
 
 def _parallel_worker_from_arrays(args_tuple: Tuple) -> Tuple[int, np.ndarray]:
@@ -1340,12 +1358,9 @@ def _parallel_worker_from_arrays(args_tuple: Tuple) -> Tuple[int, np.ndarray]:
         return frame_idx, np.array(temps_tuple, dtype=np.float32)
     except Exception as e:
         print(f"Errore nel worker per il frame {args_tuple[0]}: {e}")
-        return args_tuple[0], np.full(15, np.nan, dtype=np.float32)
-
-
-# ==================================================================
-# -------------------- FUNZIONE WRAPPER UTENTE ---------------------
-# ==================================================================
+        return args_tuple[0], np.full(
+            16, np.nan, dtype=np.float32
+        )  # Note: now 16 values instead of 15
 
 
 def analyzeTEMPS(
@@ -1357,7 +1372,7 @@ def analyzeTEMPS(
     hb_cutoff: float = DEFAULT_HB_OO_DIST_CUTOFF,
     epsilon_val: float = DEFAULT_EPSILON,
     trig_epsilon: float = TRIG_EPSILON,
-    num_workers: int = None,
+    num_workers: int | None = None,
 ) -> Dict[str, np.ndarray]:
     """
     Analizza le temperature molecolari partendo da array NumPy, usando un
@@ -1417,7 +1432,7 @@ def analyzeTEMPS(
         )
 
     # --- Esecuzione Parallela ---
-    results_array = np.full((n_frames, 15), np.nan, dtype=np.float32)
+    results_array = np.full((n_frames, 16), np.nan, dtype=np.float32)  # Now 16 values
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
         try:
@@ -1440,21 +1455,22 @@ def analyzeTEMPS(
 
     # --- Unpack dei risultati ---
     returned_data = {
-        "stretch_excited_H": results_array[:, 0],
-        "stretch_normal_H": results_array[:, 1],
-        "bend_HOH_exc": results_array[:, 2],
-        "bend_HOH_norm": results_array[:, 3],
-        "bend_HOH_eq5_exc": results_array[:, 4],
-        "bend_HOH_eq5_norm": results_array[:, 5],
-        "bend_HOH_I_exc": results_array[:, 6],
-        "bend_HOH_I_norm": results_array[:, 7],
-        "hb": results_array[:, 8],
-        "libr_twist_exc": results_array[:, 9],
-        "libr_twist_norm": results_array[:, 10],
-        "libr_wag_exc": results_array[:, 11],
-        "libr_wag_norm": results_array[:, 12],
-        "libr_rock_exc": results_array[:, 13],
-        "libr_rock_norm": results_array[:, 14],
+        "stretch_excited_bond": results_array[:, 0],
+        "stretch_normal_molecules": results_array[:, 1],
+        "stretch_normal_bond_in_excited_molecules": results_array[:, 2],
+        "bend_HOH_exc": results_array[:, 3],
+        "bend_HOH_norm": results_array[:, 4],
+        "bend_HOH_eq5_exc": results_array[:, 5],
+        "bend_HOH_eq5_norm": results_array[:, 6],
+        "bend_HOH_I_exc": results_array[:, 7],
+        "bend_HOH_I_norm": results_array[:, 8],
+        "hb": results_array[:, 9],
+        "libr_twist_exc": results_array[:, 10],
+        "libr_twist_norm": results_array[:, 11],
+        "libr_wag_exc": results_array[:, 12],
+        "libr_wag_norm": results_array[:, 13],
+        "libr_rock_exc": results_array[:, 14],
+        "libr_rock_norm": results_array[:, 15],
     }
 
     return returned_data
